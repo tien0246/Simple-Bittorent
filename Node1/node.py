@@ -6,6 +6,7 @@ import json
 import time
 import os
 import requests
+import getpass  # Để lấy tên người dùng
 
 PIECE_SIZE = 512 * 1024  # 512KB
 
@@ -75,8 +76,14 @@ class Peer:
         pass
 
 class TorrentCreator:
-    def __init__(self, file_path, tracker_url, output_path, piece_size=512 * 1024):
-        self.file_path = file_path
+    def __init__(self, file_paths, tracker_url, output_path, piece_size=512 * 1024):
+        """
+        file_paths: danh sách các đường dẫn tới các tệp hoặc thư mục cần chia sẻ
+        tracker_url: URL của Tracker
+        output_path: Đường dẫn tới tệp torrent đầu ra
+        piece_size: Kích thước mỗi piece (mặc định 512KB)
+        """
+        self.file_paths = file_paths
         self.tracker_url = tracker_url
         self.output_path = output_path
         self.piece_size = piece_size
@@ -84,35 +91,94 @@ class TorrentCreator:
         self.torrent = {}
 
     def create_torrent(self):
-        if not os.path.exists(self.file_path):
-            print("Tệp nguồn không tồn tại.")
-            return False
+        # Kiểm tra tồn tại của tất cả các tệp
+        for path in self.file_paths:
+            if not os.path.exists(path):
+                print(f"Tệp nguồn không tồn tại: {path}")
+                return False
 
-        file_size = os.path.getsize(self.file_path)
-        file_name = os.path.basename(self.file_path)
+        # Xử lý multi-file torrent
+        if len(self.file_paths) == 1 and os.path.isfile(self.file_paths[0]):
+            # Single-file torrent
+            file_path = self.file_paths[0]
+            file_size = os.path.getsize(file_path)
+            file_name = os.path.basename(file_path)
 
-        # Tính toán các piece
-        pieces = []
-        with open(self.file_path, 'rb') as f:
-            while True:
-                piece = f.read(self.piece_size)
-                if not piece:
-                    break
-                pieces.append(hashlib.sha1(piece).digest())
+            # Tính toán các piece
+            pieces = []
+            with open(file_path, 'rb') as f:
+                while True:
+                    piece = f.read(self.piece_size)
+                    if not piece:
+                        break
+                    pieces.append(hashlib.sha1(piece).digest())
 
-        pieces_concatenated = b''.join(pieces)
+            pieces_concatenated = b''.join(pieces)
 
-        # Tạo phần 'info'
-        self.info = {
-            b'name': file_name.encode(),
-            b'length': file_size,
-            b'piece length': self.piece_size,
-            b'pieces': pieces_concatenated
-        }
+            # Tạo phần 'info'
+            self.info = {
+                b'name': file_name.encode(),
+                b'length': file_size,
+                b'piece length': self.piece_size,
+                b'pieces': pieces_concatenated
+            }
+        else:
+            # Multi-file torrent
+            files = []
+            total_length = 0
+            common_path = os.path.commonpath(self.file_paths)
+            all_files = self._gather_all_files(common_path)
+            for path in all_files:
+                file_size = os.path.getsize(path)
+                file_relative_path = os.path.relpath(path, common_path)
+                files.append({
+                    b'length': file_size,
+                    b'path': file_relative_path.replace('\\', '/').encode().split(b'/')
+                })
+                total_length += file_size
+
+            # Tính toán các piece cho multi-file torrent
+            pieces = []
+            buffer = b''
+            sha1 = hashlib.sha1()
+
+            for path in all_files:
+                with open(path, 'rb') as f:
+                    while True:
+                        data = f.read(65536)  # Đọc theo khối 64KB để tối ưu
+                        if not data:
+                            break
+                        buffer += data
+                        while len(buffer) >= self.piece_size:
+                            piece_data = buffer[:self.piece_size]
+                            buffer = buffer[self.piece_size:]
+                            sha1.update(piece_data)
+                            pieces.append(sha1.digest())
+                            sha1 = hashlib.sha1()
+            # Xử lý phần dư
+            if buffer:
+                sha1.update(buffer)
+                pieces.append(sha1.digest())
+
+            pieces_concatenated = b''.join(pieces)
+
+            # Tạo phần 'info'
+            self.info = {
+                b'name': os.path.basename(common_path).encode(),
+                b'piece length': self.piece_size,
+                b'pieces': pieces_concatenated,
+                b'files': files
+            }
+
+        # Thêm trường 'creation date' và 'created by'
+        creation_date = int(time.time())
+        created_by = getpass.getuser()
 
         # Tạo cấu trúc torrent
         self.torrent = {
             b'announce': self.tracker_url.encode(),
+            b'creation date': creation_date,
+            b'created by': created_by.encode(),
             b'info': self.info
         }
 
@@ -122,6 +188,21 @@ class TorrentCreator:
 
         print(f"Tạo tệp torrent thành công: {self.output_path}")
         return True
+
+    def _gather_all_files(self, common_path):
+        """
+        Thu thập tất cả các tệp trong danh sách file_paths dựa trên common_path.
+        """
+        all_files = []
+        for path in self.file_paths:
+            if os.path.isfile(path):
+                all_files.append(path)
+            elif os.path.isdir(path):
+                for root, dirs, filenames in os.walk(path):
+                    for filename in filenames:
+                        full_path = os.path.join(root, filename)
+                        all_files.append(full_path)
+        return all_files
 
 class Node:
     def __init__(self, torrent_file=None):
@@ -152,11 +233,11 @@ class Node:
         # Lấy thông tin từ phần 'info'
         self.info = torrent_data[b'info']
         self.info_hash_bytes = hashlib.sha1(bencodepy.encode(self.info)).digest()
-        self.file_length = self.info.get(b'length', 0)
+        self.file_length = self.info.get(b'length', 0)  # Chỉ sử dụng trong single-file torrent
         self.file_path = self.info.get(b'name', b'file').decode()
         pieces_raw = self.info.get(b'pieces', b'')
         self.pieces = [pieces_raw[i:i+20] for i in range(0, len(pieces_raw), 20)]
-        print(f"Tên file: {self.file_path}, Kích thước: {self.file_length} bytes")
+        print(f"Tên torrent: {self.file_path}, Số lượng pieces: {len(self.pieces)}")
 
         # Khởi tạo trạng thái các piece
         self.piece_status = [False] * len(self.pieces)
@@ -166,28 +247,42 @@ class Node:
         return f"-PC0001-{hashlib.sha1(str(time.time()).encode()).hexdigest()[:12]}"
 
     def load_existing_file(self):
-        if os.path.exists(self.file_path):
-            existing_size = os.path.getsize(self.file_path)
-            self.downloaded = existing_size
-            # Ở đây bạn có thể kiểm tra các piece đã tải xuống
-            print(f"Tìm thấy file tồn tại: {self.file_path}, Kích thước: {existing_size} bytes")
+        if 'files' in self.info:
+            # Multi-file torrent
+            if not os.path.exists(self.file_path):
+                os.makedirs(self.file_path)
+            for file in self.info[b'files']:
+                file_rel_path = os.path.join(self.file_path, *[p.decode() for p in file[b'path']])
+                file_dir = os.path.dirname(file_rel_path)
+                if not os.path.exists(file_dir):
+                    os.makedirs(file_dir)
+                if not os.path.exists(file_rel_path):
+                    with open(file_rel_path, 'wb') as f:
+                        f.truncate(file[b'length'])
+            print(f"Tạo thư mục và tệp mới cho multi-file torrent: {self.file_path}")
         else:
-            # Tạo file trống
-            with open(self.file_path, 'wb') as f:
-                f.truncate(self.file_length)
-            print(f"Tạo file mới: {self.file_path}")
+            # Single-file torrent
+            if os.path.exists(self.file_path):
+                existing_size = os.path.getsize(self.file_path)
+                self.downloaded = existing_size
+                print(f"Tìm thấy file tồn tại: {self.file_path}, Kích thước: {existing_size} bytes")
+            else:
+                with open(self.file_path, 'wb') as f:
+                    f.truncate(self.file_length)
+                print(f"Tạo file mới: {self.file_path}")
 
     def announce_to_tracker(self):
+        left = self.file_length - self.downloaded if 'length' in self.info else 0
         params = {
             'info_hash': self.info_hash_bytes.hex(),
             'peer_id': self.peer_id,
             'port': 6881,
             'uploaded': self.downloaded,
             'downloaded': self.downloaded,
-            'left': self.file_length - self.downloaded,
+            'left': left,
             'event': 'started'
         }
-        response = requests.get(f"{self.tracker_url}/announce", params=params)
+        response = requests.get(f"http://{self.tracker_url}/announce", params=params)
         if response.status_code == 200:
             response_data = bencodepy.decode(response.content)
             peers_info = response_data.get(b'peers', {})
@@ -206,7 +301,7 @@ class Node:
             'name': name,
             'file_size': file_size
         }
-        response = requests.get(f"{self.tracker_url}/upload_torrent", params=params)
+        response = requests.get(f"http://{self.tracker_url}/upload_torrent", params=params)
         if response.status_code == 200:
             print("Tải torrent lên tracker thành công.")
         else:
@@ -216,7 +311,7 @@ class Node:
         params = {
             'info_hash': info_hash.hex()
         }
-        response = requests.get(f"{self.tracker_url}/scrape", params=params)
+        response = requests.get(f"http://{self.tracker_url}/scrape", params=params)
         if response.status_code == 200:
             data = bencodepy.decode(response.content)
             print(f"Dữ liệu scrape: {data}")
@@ -263,17 +358,29 @@ def interactive_menu():
             print("Lựa chọn không hợp lệ. Vui lòng thử lại.")
 
 def create_torrent_flow():
-    file_path = input("Nhập đường dẫn tới tệp muốn chia sẻ: ").strip()
-    tracker_url = input("Nhập URL của Tracker: ").strip()
+    print("\n=== Tạo Tệp Torrent ===")
+    try:
+        num_files = int(input("Bạn muốn chia sẻ bao nhiêu tệp/thư mục? Nhập số lượng: "))
+    except ValueError:
+        print("Vui lòng nhập một số hợp lệ.")
+        return
+    file_paths = []
+    for i in range(num_files):
+        path = input(f"Nhập đường dẫn tới tệp/thư mục {i+1}: ").strip()
+        file_paths.append(path)
+    tracker_url = input("Nhập URL của Tracker (bao gồm http:// hoặc https://): ").strip()
+    if not tracker_url.startswith('http://') and not tracker_url.startswith('https://'):
+        tracker_url = 'http://' + tracker_url  # Thêm http:// nếu người dùng chưa nhập
     output_path = input("Nhập tên tệp torrent đầu ra (ví dụ: myfile.torrent): ").strip()
 
-    creator = TorrentCreator(file_path, tracker_url, output_path)
+    creator = TorrentCreator(file_paths, tracker_url, output_path)
     if creator.create_torrent():
         print(f"Tệp torrent đã được tạo tại: {output_path}")
     else:
         print("Tạo tệp torrent thất bại.")
 
 def upload_torrent_flow():
+    print("\n=== Gửi Torrent lên Tracker để trở thành Seeder ===")
     torrent_path = input("Nhập đường dẫn tới tệp torrent (.torrent): ").strip()
     if not os.path.exists(torrent_path):
         print("Tệp torrent không tồn tại.")

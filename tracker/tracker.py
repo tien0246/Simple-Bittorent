@@ -37,7 +37,6 @@ def make_bencoded_response(message, status_code):
 def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        print(session)
         if 'username' not in session:
             return make_bencoded_response({'failure reason': 'Authentication required.'}, 401)
         return f(*args, **kwargs)
@@ -158,6 +157,7 @@ def upload_torrent():
         'name': request.args.get('name'),
         'file_size': int(request.args.get('file_size')),
         'date_uploaded': int(time.time()),
+        'created_by': session['username'],
         'seeder': 0,
         'leecher': 0,
         'completed': 0
@@ -178,6 +178,12 @@ def scrape():
         'completed': torrents[info_hash]['completed']
     }
     return make_bencoded_response(response_dict, 200)
+
+@app.route('/get_torrents', methods=['GET'])
+@login_required
+def get_torrents():
+    torrents = load_json(torrents_file)
+    return make_bencoded_response(torrents, 200)
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, threaded=True)

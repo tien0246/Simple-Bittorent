@@ -4,6 +4,7 @@ import bencodepy # type: ignore
 import threading
 import hashlib
 import time
+import os
 from functools import wraps
 
 app = Flask(__name__)
@@ -16,6 +17,9 @@ users_file = 'users.json'
 torrents_file = 'torrents.json'
 peers_file = 'peers.json'
 
+if not os.path.exists(torrents_dir):
+    os.makedirs(torrents_dir)
+    
 def load_json(filename):
     with lock:
         try:
@@ -28,6 +32,7 @@ def save_json(filename, data):
     with lock:
         with open(filename, 'w') as f:
             json.dump(data, f)
+
 
 def make_bencoded_response(message, status_code):
     response_data = bencodepy.encode(message)

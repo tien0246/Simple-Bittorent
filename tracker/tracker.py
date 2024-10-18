@@ -146,7 +146,6 @@ def announce():
 
 @app.route('/upload_torrent', methods=['POST'])
 @login_required
-def upload_torrent():
     # required_params = ['info_hash', 'name', 'file_size']
     # missing_params = [param for param in required_params if not request.args.get(param)]
     # if missing_params:
@@ -165,32 +164,54 @@ def upload_torrent():
     #     'completed': 0
     # }
     # save_json(torrents_file, torrents)
-
+def upload_torrent():
+    # Extract required parameters from form data
     required_params = ['info_hash', 'name', 'file_size']
     missing_params = [param for param in required_params if not request.form.get(param)]
     if missing_params:
         return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
-    torrent = request.files['torrent']
+    
+    # Get the uploaded torrent file
+    torrent_file = request.files.get('torrent')
+    if not torrent_file:
+        return make_bencoded_response({'failure reason': 'Missing torrent file'}, 400)
+    
+    # Extract info from the form
     info_hash = request.form['info_hash']
+    name = request.form['name']
+    file_size = request.form.get('file_size')
+
+    try:
+        file_size = int(file_size)
+    except ValueError:
+        return make_bencoded_response({'failure reason': 'Invalid file size'}, 400)
+
     torrents = load_json(torrents_file)
+
+    # Check if the torrent already exists
     if info_hash in torrents:
         return make_bencoded_response({'failure reason': 'Torrent already exists'}, 400)
+
+    # Add torrent details to the torrents list
     torrents[info_hash] = {
-        'name': request.args.get('name'),
-        'file_size': int(request.args.get('file_size')),
+        'name': name,
+        'file_size': file_size,
         'date_uploaded': int(time.time()),
         'created_by': session['username'],
         'seeder': 0,
         'leecher': 0,
         'completed': 0
     }
-    save_json(torrents_file, torrents)
     
-    # Lưu tệp torrent
-    torrent_path = torrents_dir + '/' + torrent.filename
-    torrent.save(torrent_path)
+    # Save torrent details to file
+    save_json(torrents_file, torrents)
+
+    # Save the torrent file to the directory
+    torrent_path = f"{torrents_dir}/{torrent_file.filename}"
+    torrent_file.save(torrent_path)
 
     return make_bencoded_response({'status': 'success'}, 200)
+
 
 @app.route('/scrape', methods=['GET'])
 @login_required

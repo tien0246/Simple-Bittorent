@@ -94,7 +94,33 @@ def create_torrent(path, tracker_url):
     with open(torrent_filename, 'wb') as f:
         f.write(torrent_file)
 
+def calculate_info_hash(torrent_path):
+    with open(torrent_path, 'rb') as f:
+        torrent = bencodepy.decode(f.read())
+        info = torrent[b'info']
+        info = bencodepy.encode(info)
+        return hashlib.sha1(info).hexdigest()
 
+def upload_torrent(torrent_path):
+    url = f"{server_url}/upload_torrent"
+    file = {'torrent': open(torrent_path, 'rb')}
+    torrent = bencodepy.decode(open(torrent_path, 'rb').read())
+    data = {
+        'info_hash': calculate_info_hash(torrent_path),
+        'name': torrent[b'info'][b'name'].decode(),
+        'file_size': torrent[b'info'][b'length']
+    }
+
+    try:
+        response = session.post(url, files=file, data=data)
+        if response.status_code == 200:
+            print("Torrent uploaded successfully")
+        else:
+            print("Failed to upload torrent:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+    except requests.exceptions.ConnectionError:
+        print("Failed to connect to server")
+    except Exception as e:
+        print("An error occurred:", e)
 
 
 
@@ -158,8 +184,10 @@ if __name__ == '__main__':
         print("3. Logout")
         print("4. List torrents")
         print("5. Create torrent")
-        print("6. Exit")
+        print("6. Upload torrent")
+        print("7. Exit")
         choice = input("Enter choice: ")
+
         if choice == '1':
             username = input("Enter username: ")
             password = input("Enter password: ")
@@ -174,9 +202,12 @@ if __name__ == '__main__':
             list_torrents()
         elif choice == '5':
             path = input("Enter path to file or directory: ")
-            create_torrent(path, server_url)
+            tracker_url = input("Enter tracker URL: ")
+            create_torrent(path, tracker_url)
         elif choice == '6':
+            torrent_path = input("Enter path to torrent file: ")
+            upload_torrent(torrent_path)
+        elif choice == '7':
             break
         else:
             print("Invalid choice")
-    

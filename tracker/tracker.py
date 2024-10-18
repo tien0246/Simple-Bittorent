@@ -127,6 +127,8 @@ def announce():
                 del peers[info_hash][peer_id]
                 if not peers[info_hash]:
                     del peers[info_hash]
+            save_json(peers_file, peers)
+            save_json(torrents_file, torrents)
             return make_bencoded_response({'status': 'success'}, 200)
 
             
@@ -136,7 +138,12 @@ def announce():
                 torrents[info_hash]['seeder'] += 1
                 torrents[info_hash]['leecher'] -= 1
                 torrents[info_hash]['completed'] += 1
+            save_json(peers_file, peers)
+            save_json(torrents_file, torrents)
             return make_bencoded_response({'status': 'success'}, 200)
+        
+        else:
+            return make_bencoded_response({'failure reason': 'Invalid event'}, 400)
 
         save_json(peers_file, peers)
         save_json(torrents_file, torrents)

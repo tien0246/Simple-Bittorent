@@ -165,10 +165,11 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
     try:
         response = session.get(url, params=data)
         if response.status_code == 200:
-            response_dict = bencodepy.decode(response.content)
-            for peer in response_dict['peers']:
-                print(f"{peer['ip']}:{peer['port']}")
-            return response_dict['peers']
+            print(response.content)
+            response_dict = bencodepy.decode(response.content).get(b'peers', [])
+            # for peer in response_dict:
+            #     print(f"{peer['ip']}:{peer['port']}")
+            return response_dict
         else:
             print("Failed to announce:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
     except Exception as e:
@@ -226,7 +227,8 @@ def list_torrents():
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
 if __name__ == '__main__':
-    server_url = 'http://10.0.221.122:8000'
+    # server_url = 'http://10.0.221.122:8000'
+    server_url = 'http://0.0.0.0:8000'
     while True:
         print("1. Register")
         print("2. Login")

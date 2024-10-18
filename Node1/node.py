@@ -22,7 +22,6 @@ torrents_dir = 'torrents'
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
     
-
 def create_torrent(path, tracker_url, output_file=None):
     if not os.path.exists(path):
         print("File or directory does not exist")
@@ -107,8 +106,16 @@ def upload_torrent(torrent_path):
     data = {
         'info_hash': calculate_info_hash(torrent[b'info']),
         'name': torrent[b'info'][b'name'].decode(),
-        'file_size': torrent[b'info'][b'length']
     }
+    if b'length' in torrent[b'info']:
+        data['file_size'] = torrent[b'info'][b'length']
+    else:
+        files_info = [
+            {'length': file[b'length'], 'path': [p.decode('utf-8') for p in file[b'path']]}
+            for file in torrent[b'info'][b'files']
+        ]
+        data['path'] = json.dumps(files_info) 
+        print(data['path'])
 
     try:
         response = session.post(url, files=file, data=data)
@@ -165,11 +172,15 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
     try:
         response = session.get(url, params=data)
         if response.status_code == 200:
-            print(response.content)
-            response_dict = bencodepy.decode(response.content).get(b'peers', [])
-            # for peer in response_dict:
-            #     print(f"{peer['ip']}:{peer['port']}")
-            return response_dict
+            response_dict = bencodepy.decode(response.content)
+            peers = response_dict.get(b'peers', {})
+            peers_list = []
+            for peerid, peer_info in peers.items():
+                peerid = peerid.decode()
+                peer_info = {k.decode(): (v.decode() if isinstance(v, bytes) else v) for k, v in peer_info.items()}
+                peer_info['peerid'] = peerid
+                peers_list.append(peer_info)
+            return peers_list
         else:
             print("Failed to announce:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
     except Exception as e:
@@ -229,40 +240,43 @@ def list_torrents():
 if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
     server_url = 'http://0.0.0.0:8000'
-    while True:
-        print("1. Register")
-        print("2. Login")
-        print("3. Logout")
-        print("4. List torrents")
-        print("5. Create torrent")
-        print("6. Upload torrent")
-        print("7. Download torrent")
-        print("8. Exit")
-        choice = input("Enter choice: ")
+    try:
+        while True:
+            print("1. Register")
+            print("2. Login")
+            print("3. Logout")
+            print("4. List torrents")
+            print("5. Create torrent")
+            print("6. Upload torrent")
+            print("7. Download torrent")
+            print("8. Exit")
+            choice = input("Enter choice: ")
 
-        if choice == '1':
-            username = input("Enter username: ")
-            password = input("Enter password: ")
-            register(username, password)
-        elif choice == '2':
-            username = input("Enter username: ")
-            password = input("Enter password: ")
-            login(username, password)
-        elif choice == '3':
-            logout()
-        elif choice == '4':
-            list_torrents()
-        elif choice == '5':
-            path = input("Enter path to file or directory: ")
-            tracker_url = input("Enter tracker URL: ")
-            create_torrent(path, tracker_url)
-        elif choice == '6':
-            torrent_path = input("Enter path to torrent file: ")
-            upload_torrent(torrent_path)
-        elif choice == '7':
-            info_hash = input("Enter info hash: ")
-            download_torrent(info_hash)
-        elif choice == '8':
-            print(announce("22782770294ed1b83806bec0549e54890164fa3f", "started", 9001, 0, 0, 0))
-        else:
-            print("Invalid choice")
+            if choice == '1':
+                username = input("Enter username: ")
+                password = input("Enter password: ")
+                register(username, password)
+            elif choice == '2':
+                username = input("Enter username: ")
+                password = input("Enter password: ")
+                login(username, password)
+            elif choice == '3':
+                logout()
+            elif choice == '4':
+                list_torrents()
+            elif choice == '5':
+                path = input("Enter path to file or directory: ")
+                tracker_url = input("Enter tracker URL: ")
+                create_torrent(path, tracker_url)
+            elif choice == '6':
+                torrent_path = input("Enter path to torrent file: ")
+                upload_torrent(torrent_path)
+            elif choice == '7':
+                info_hash = input("Enter info hash: ")
+                download_torrent(info_hash)
+            elif choice == '8':
+                announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0)
+            else:
+                print("Invalid choice")
+    except KeyboardInterrupt:
+        announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "stopped", 9001, 0, 0, 100)

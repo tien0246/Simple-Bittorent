@@ -186,8 +186,7 @@ def upload_torrent():
         except ValueError:
             return make_bencoded_response({'failure reason': 'Invalid file size'}, 400)
     else:
-        path = request.form.get('path')
-        torrents[info_hash]['path'] = path
+        torrents[info_hash]['path'] = json.loads(request.form.get('path'))
     
     save_json(torrents_file, torrents)
 
@@ -230,4 +229,4 @@ def get_torrent(info_hash):
             
 
 if __name__ == '__main__':
-    app.run(host='10.0.221.122', port=8000, threaded=True)
+    app.run(host='0.0.0.0', port=8000, threaded=True)

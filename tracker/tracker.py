@@ -78,7 +78,7 @@ def logout():
 @login_required
 def announce():
     try:
-        required_params = ['event']
+        required_params = ['info_hash', 'peer_id', 'event']
         missing_params = [param for param in required_params if not request.args.get(param)]
         if missing_params:
             return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
@@ -101,7 +101,7 @@ def announce():
                 return make_bencoded_response({'failure reason': 'Not found'}, 404)
 
         if event == 'started':
-            required_params = ['info_hash', 'peer_id', 'port', 'uploaded', 'downloaded', 'left']
+            required_params = ['port', 'uploaded', 'downloaded', 'left']
             missing_params = [param for param in required_params if not request.args.get(param)]
             
             if missing_params:
@@ -112,13 +112,12 @@ def announce():
                 'port': int(port),
                 'uploaded': int(uploaded),
                 'downloaded': int(downloaded),
-                'left': int(left),
-                'is_seeder': int(left) == 0
+                'left': int(left)
             }
 
             if peer_id not in peers[info_hash]:
                 peers[info_hash][peer_id] = peer_info
-                torrents[info_hash]['seeder' if peer_info['is_seeder'] else 'leecher'] += 1
+                torrents[info_hash]['seeder' if int(left) == 0 else 'leecher'] += 1
             else:
                 peers[info_hash][peer_id].update(peer_info)
             
@@ -128,12 +127,11 @@ def announce():
                 del peers[info_hash][peer_id]
                 if not peers[info_hash]:
                     del peers[info_hash]
-                torrents[info_hash]['seeder' if peers[info_hash][peer_id]['is_seeder'] else 'leecher'] -= 1
+                torrents[info_hash]['seeder' if peers[info_hash][peer_id]['left'] == 0 else 'leecher'] -= 1
             
         elif event == 'completed':
             if peer_id in peers[info_hash]:
                 peers[info_hash][peer_id]['left'] = 0
-                peers[info_hash][peer_id]['is_seeder'] = True
                 torrents[info_hash]['seeder'] += 1
                 torrents[info_hash]['leecher'] -= 1
                 torrents[info_hash]['completed'] += 1
@@ -195,6 +193,11 @@ def upload_torrent():
 @app.route('/scrape', methods=['GET'])
 @login_required
 def scrape():
+    required_params = ['info_hash']
+    missing_params = [param for param in required_params if not request.form.get(param)]
+    if missing_params:
+        return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
+    
     info_hash = request.args.get('info_hash')
     torrents = load_json(torrents_file)
     if info_hash not in torrents:
@@ -209,7 +212,6 @@ def scrape():
 @app.route('/list_torrents', methods=['GET'])
 @login_required
 def list_torrents():
-    
     torrents = load_json(torrents_file)
     return make_bencoded_response(torrents, 200)
 
@@ -218,10 +220,7 @@ def get_torrent(info_hash):
     torrents = load_json(torrents_file)
     if info_hash not in torrents:
         return make_bencoded_response({'failure reason': 'Not found'}, 404)
-    torrent_path = f"{torrents_dir}/{info_hash + '.torrent'}"
-    with open(torrent_path, 'rb') as f:
-        torrent_data = f.read()
-    return make_bencoded_response(torrent_data, 200)
+    return send_from_directory(torrents_dir, info_hash + '.torrent', as_attachment=True)
             
 
 if __name__ == '__main__':

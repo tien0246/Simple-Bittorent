@@ -166,8 +166,10 @@ def upload_torrent():
     # }
     # save_json(torrents_file, torrents)
 
-    if 'torrent' not in request.files or 'info_hash' or 'name' or 'file_size' not in request.form:
-        return jsonify({'status': 'fail', 'message': 'Missing torrent file or info_hash'}), 400
+    required_params = ['info_hash', 'name', 'file_size']
+    missing_params = [param for param in required_params if not request.form.get(param)]
+    if missing_params:
+        return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
     torrent = request.files['torrent']
     info_hash = request.form['info_hash']
     torrents = load_json(torrents_file)
@@ -207,6 +209,7 @@ def scrape():
 @app.route('/list_torrents', methods=['GET'])
 @login_required
 def list_torrents():
+    
     torrents = load_json(torrents_file)
     return make_bencoded_response(torrents, 200)
 

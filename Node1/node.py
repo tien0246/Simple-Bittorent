@@ -8,7 +8,6 @@ import time
 import os
 import sys
 import random
-from collections import OrderedDict
 
 session = requests.Session()
 # lock = threading.Lock()
@@ -43,11 +42,12 @@ def create_torrent(path, tracker_url, output_file=None):
 
         pieces_concatenated = b''.join(pieces)
 
-        info = OrderedDict()
-        info[b'length'] = file_size
-        info[b'name'] = name
-        info[b'piece length'] = piece_length
-        info[b'pieces'] = pieces_concatenated
+        info = {
+            'length': file_size,
+            'name': name,
+            'piece length': piece_length,
+            'pieces': pieces_concatenated
+        }
 
     else:
         # Multiple files
@@ -61,7 +61,7 @@ def create_torrent(path, tracker_url, output_file=None):
                 total_size += file_size
                 relative_path = os.path.relpath(file_path, path)
                 path_components = [component.encode('utf-8') for component in relative_path.split(os.sep)]
-                files.append(OrderedDict([(b'length', file_size), (b'path', path_components)]))
+                files.append({'length': file_size, 'path': path_components})
 
                 with open(file_path, 'rb') as f:
                     while True:
@@ -74,27 +74,56 @@ def create_torrent(path, tracker_url, output_file=None):
 
         pieces_concatenated = b''.join(pieces)
 
-        info = OrderedDict()
-        info[b'files'] = files
-        info[b'name'] = name
-        info[b'piece length'] = piece_length
-        info[b'pieces'] = pieces_concatenated
+        info = {
+            'files': files,
+            'name': name,
+            'piece length': piece_length,
+            'pieces': pieces_concatenated
+        }
 
-    info = OrderedDict(sorted(info.items()))
+    torrent = {
+        'announce': tracker_url,
+        'creation date': int(time.time()),
+        'created by': username,
+        'info': info
+    }
 
-    torrent = OrderedDict()
-    torrent[b'announce'] = tracker_url.encode('utf-8')
-    torrent[b'creation date'] = int(time.time())
-    torrent[b'created by'] = username.encode('utf-8')
-    torrent[b'info'] = info
+    print(calculate_info_hash(info))
 
-    torrent = OrderedDict(sorted(torrent.items()))
     torrent_file = bencodepy.encode(torrent)
     torrent_filename = (output_file or calculate_info_hash(info)) + '.torrent'
 
     torrent_path = os.path.join(torrents_dir, torrent_filename)
     with open(torrent_path, 'wb') as f:
         f.write(torrent_file)
+
+def parse_torrent_file(torrent_path):
+    with open(torrent_path, 'rb') as f:
+        torrent_data = f.read()
+    meta = bencodepy.decode(torrent_data)
+    info = meta[b'info']
+    info_hash = calculate_info_hash(info)
+    piece_length = info[b'piece length']
+    pieces = info[b'pieces']
+    num_pieces = len(pieces) // 20
+    total_length = 0
+    if b'length' in info:
+        total_length = info[b'length']
+    elif b'files' in info:
+        for file_info in info[b'files']:
+            total_length += file_info[b'length']
+    else:
+        raise ValueError("Invalid torrent file: no length or files")
+    name = info[b'name'].decode('utf-8')
+    return {
+        'info': info,
+        'info_hash': info_hash,
+        'piece_length': piece_length,
+        'pieces': pieces,
+        'num_pieces': num_pieces,
+        'total_length': total_length,
+        'name': name
+    }
 
 def calculate_info_hash(info):
     return hashlib.sha1(bencodepy.encode(info)).hexdigest()
@@ -186,11 +215,6 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
     except Exception as e:
         print("An error occurred:", e)
 
-
-
-
-
-
 def register(username, password):
     data = {'username': username, 'password': password}
     url = server_url + '/signup'
@@ -247,6 +271,9 @@ def list_torrents():
     else:
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
+
+
+
 if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
     server_url = 'http://0.0.0.0:8000'
@@ -285,7 +312,7 @@ if __name__ == '__main__':
                 info_hash = input("Enter info hash: ")
                 download_torrent(info_hash)
             elif choice == '8':
-                announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0)
+                print(announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0))
             else:
                 print("Invalid choice")
     except KeyboardInterrupt:

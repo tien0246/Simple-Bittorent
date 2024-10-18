@@ -33,7 +33,6 @@ def save_json(filename, data):
         with open(filename, 'w') as f:
             json.dump(data, f)
 
-
 def make_bencoded_response(message, status_code):
     response_data = bencodepy.encode(message)
     response = make_response(response_data)

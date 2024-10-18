@@ -124,10 +124,12 @@ def announce():
 
         elif event == 'stopped':
             if peer_id in peers[info_hash]:
+                torrents[info_hash]['seeder' if peers[info_hash][peer_id]['left'] == 0 else 'leecher'] -= 1
                 del peers[info_hash][peer_id]
                 if not peers[info_hash]:
                     del peers[info_hash]
-                torrents[info_hash]['seeder' if peers[info_hash][peer_id]['left'] == 0 else 'leecher'] -= 1
+            return make_bencoded_response({'status': 'success'}, 200)
+
             
         elif event == 'completed':
             if peer_id in peers[info_hash]:
@@ -135,6 +137,7 @@ def announce():
                 torrents[info_hash]['seeder'] += 1
                 torrents[info_hash]['leecher'] -= 1
                 torrents[info_hash]['completed'] += 1
+            return make_bencoded_response({'status': 'success'}, 200)
 
         save_json(peers_file, peers)
         save_json(torrents_file, torrents)

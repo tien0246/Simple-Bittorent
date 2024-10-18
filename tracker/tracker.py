@@ -10,6 +10,8 @@ app = Flask(__name__)
 app.secret_key = 'secret_key'
 lock = threading.Lock()
 
+torrents_dir = 'torrents'
+hash_file = 'hashes.json'
 users_file = 'users.json'
 torrents_file = 'torrents.json'
 peers_file = 'peers.json'
@@ -142,14 +144,32 @@ def announce():
     except Exception as e:
         return make_bencoded_response({'failure reason': f'Unexpected error: {str(e)}'}, 500)
 
-@app.route('/upload_torrent', methods=['GET'])
+@app.route('/upload_torrent', methods=['POST'])
 @login_required
 def upload_torrent():
-    required_params = ['info_hash', 'name', 'file_size']
-    missing_params = [param for param in required_params if not request.args.get(param)]
-    if missing_params:
-        return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
-    info_hash = request.args.get('info_hash')
+    # required_params = ['info_hash', 'name', 'file_size']
+    # missing_params = [param for param in required_params if not request.args.get(param)]
+    # if missing_params:
+    #     return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
+    # info_hash = request.args.get('info_hash')
+    # torrents = load_json(torrents_file)
+    # if info_hash in torrents:
+    #     return make_bencoded_response({'failure reason': 'Torrent already exists'}, 400)
+    # torrents[info_hash] = {
+    #     'name': request.args.get('name'),
+    #     'file_size': int(request.args.get('file_size')),
+    #     'date_uploaded': int(time.time()),
+    #     'created_by': session['username'],
+    #     'seeder': 0,
+    #     'leecher': 0,
+    #     'completed': 0
+    # }
+    # save_json(torrents_file, torrents)
+
+    if 'torrent' not in request.files or 'info_hash' or 'name' or 'file_size' not in request.form:
+        return jsonify({'status': 'fail', 'message': 'Missing torrent file or info_hash'}), 400
+    torrent = request.files['torrent']
+    info_hash = request.form['info_hash']
     torrents = load_json(torrents_file)
     if info_hash in torrents:
         return make_bencoded_response({'failure reason': 'Torrent already exists'}, 400)
@@ -163,6 +183,11 @@ def upload_torrent():
         'completed': 0
     }
     save_json(torrents_file, torrents)
+    
+    # Lưu tệp torrent
+    torrent_path = torrents_dir + '/' + torrent.filename
+    torrent.save(torrent_path)
+
     return make_bencoded_response({'status': 'success'}, 200)
 
 @app.route('/scrape', methods=['GET'])
@@ -184,6 +209,7 @@ def scrape():
 def list_torrents():
     torrents = load_json(torrents_file)
     return make_bencoded_response(torrents, 200)
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, threaded=True)

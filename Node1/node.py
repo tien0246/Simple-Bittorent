@@ -227,7 +227,17 @@ def list_torrents():
             torrent_info = {k.decode(): v for k, v in torrent_info.items()}
             print("Info Hash:", info_hash)
             print("Name:", torrent_info['name'].decode())
-            print("File Size:", torrent_info['file_size'])
+            if 'path' in torrent_info:
+                print("Files:")
+                file_size = 0
+                for file in torrent_info['path']:
+                    path = file[b'path'] if b'path' in file else file['path']
+                    length = file[b'length'] if b'length' in file else file['length']
+                    file_size += length
+                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({length} bytes)")
+                print("File Size:", file_size, "bytes")
+            else:
+                print("File Size:", torrent_info['file_size'], "bytes")
             print("Uploaded by:", torrent_info['created_by'].decode())
             print("Date Uploaded:", time.ctime(torrent_info['date_uploaded']))
             print("Seeders:", torrent_info['seeder'])

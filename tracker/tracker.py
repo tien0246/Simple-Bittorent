@@ -226,7 +226,6 @@ def get_torrent(info_hash):
     if info_hash not in torrents:
         return make_bencoded_response({'failure reason': 'Not found'}, 404)
     return send_from_directory(torrents_dir, info_hash + '.torrent', as_attachment=True)
-            
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8000, threaded=True)

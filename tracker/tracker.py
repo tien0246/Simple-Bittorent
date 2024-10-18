@@ -187,7 +187,7 @@ def upload_torrent():
     
     save_json(torrents_file, torrents)
 
-    torrent_path = f"{torrents_dir}/{torrent_file.filename}"
+    torrent_path = f"{torrents_dir}/{info_hash + ".torrent"}"
     torrent_file.save(torrent_path)
 
     return make_bencoded_response({'status': 'success'}, 200)
@@ -213,6 +213,17 @@ def list_torrents():
     torrents = load_json(torrents_file)
     return make_bencoded_response(torrents, 200)
 
+@app.route('/download_torrent/<info_hash>', methods=['GET'])
+def get_torrent(info_hash):
+    print(info_hash)
+    torrent_file = os.path.join(info_hash + '.torrent')
+    print(torrent_file)
+    if not os.path.exists(torrents_file):
+        return make_bencoded_response({'failure reason': 'Not found'}, 400)
+    return send_from_directory(torrents_dir, torrent_file, as_attachment=True)
+    # with lock:
+    #     with open(torrent_file, 'r') as data:
+            
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, threaded=True)
+    app.run(host='10.0.221.122', port=8000, threaded=True)

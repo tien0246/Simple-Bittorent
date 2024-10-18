@@ -153,24 +153,18 @@ def announce():
 @app.route('/upload_torrent', methods=['POST'])
 @login_required
 def upload_torrent():
-    required_params = ['info_hash', 'name', 'file_size']
+    required_params = ['info_hash', 'name']
     missing_params = [param for param in required_params if not request.form.get(param)]
     if missing_params:
         return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
-
+    if not request.form.get('file_size') and not request.form.get('path'):
+        return make_bencoded_response({'failure reason': 'Missing file_size or path'}, 400)
     torrent_file = request.files.get('torrent')
     if not torrent_file:
         return make_bencoded_response({'failure reason': 'Missing torrent file'}, 400)
 
     info_hash = request.form['info_hash']
     name = request.form['name']
-    file_size = request.form.get('file_size')
-
-    try:
-        file_size = int(file_size)
-    except ValueError:
-        return make_bencoded_response({'failure reason': 'Invalid file size'}, 400)
-
     torrents = load_json(torrents_file)
 
     if info_hash in torrents:
@@ -178,13 +172,22 @@ def upload_torrent():
 
     torrents[info_hash] = {
         'name': name,
-        'file_size': file_size,
         'date_uploaded': int(time.time()),
         'created_by': session['username'],
         'seeder': 0,
         'leecher': 0,
         'completed': 0
     }
+    file_size = request.form.get('file_size')
+    if file_size:
+        try:
+            file_size = int(file_size)
+            torrents[info_hash]['file_size'] = file_size
+        except ValueError:
+            return make_bencoded_response({'failure reason': 'Invalid file size'}, 400)
+    else:
+        path = request.form.get('path')
+        torrents[info_hash]['path'] = path
     
     save_json(torrents_file, torrents)
 

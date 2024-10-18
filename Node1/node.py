@@ -13,7 +13,7 @@ from collections import OrderedDict
 session = requests.Session()
 # lock = threading.Lock()
 peer_port = 50000 + random.randint(0, 5000)
-peer_id = hashlib.sha1(str(random.getrandbits(160)).encode()).digest()
+peer_id = hashlib.sha1(str(random.randint(0, sys.maxsize)).encode()).hexdigest()
 server_url = ''
 username = ''
 piece_length = 512 * 1024
@@ -21,8 +21,9 @@ torrents_dir = 'torrents'
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
+    
 
-def create_torrent(path, tracker_url):
+def create_torrent(path, tracker_url, output_file=None):
     if not os.path.exists(path):
         print("File or directory does not exist")
         return
@@ -90,7 +91,7 @@ def create_torrent(path, tracker_url):
 
     torrent = OrderedDict(sorted(torrent.items()))
     torrent_file = bencodepy.encode(torrent)
-    torrent_filename = calculate_info_hash(info) + '.torrent'
+    torrent_filename = (output_file or calculate_info_hash(info)) + '.torrent'
 
     torrent_path = os.path.join(torrents_dir, torrent_filename)
     with open(torrent_path, 'wb') as f:
@@ -137,7 +138,41 @@ def download_torrent(info_hash):
     except Exception as e:
         print("An error occurred:", e)
 
+def scrape(info_hash):
+    url = f"{server_url}/scrape"
+    data = {'info_hash': info_hash}
+    response = session.get(url, params=data)
+    if response.status_code == 200:
+        response_dict = bencodepy.decode(response.content)
+        print("Seeder:", response_dict['seeder'])
+        print("Leecher:", response_dict['leecher'])
+        print("Completed:", response_dict['completed'])
+    else:
+        print("Failed to scrape:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
+def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
+    url = f"{server_url}/announce"
+    data = {
+        'info_hash': info_hash,
+        'peer_id': peer_id,
+        'event': event
+    }
+    if event == 'started':
+        data['port'] = peer_port
+        data['uploaded'] = uploaded
+        data['downloaded'] = downloaded
+        data['left'] = left
+    try:
+        response = session.get(url, params=data)
+        if response.status_code == 200:
+            response_dict = bencodepy.decode(response.content)
+            for peer in response_dict['peers']:
+                print(f"{peer['ip']}:{peer['port']}")
+            return response_dict['peers']
+        else:
+            print("Failed to announce:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+    except Exception as e:
+        print("An error occurred:", e)
 
 
 
@@ -191,7 +226,7 @@ def list_torrents():
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
 if __name__ == '__main__':
-    server_url = 'http://0.0.0.0:8000'
+    server_url = 'http://10.0.221.122:8000'
     while True:
         print("1. Register")
         print("2. Login")
@@ -226,6 +261,6 @@ if __name__ == '__main__':
             info_hash = input("Enter info hash: ")
             download_torrent(info_hash)
         elif choice == '8':
-            break
+            print(announce("22782770294ed1b83806bec0549e54890164fa3f", "started", 9001, 0, 0, 0))
         else:
             print("Invalid choice")

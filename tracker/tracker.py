@@ -179,9 +179,9 @@ def scrape():
     }
     return make_bencoded_response(response_dict, 200)
 
-@app.route('/get_torrents', methods=['GET'])
+@app.route('/list_torrents', methods=['GET'])
 @login_required
-def get_torrents():
+def list_torrents():
     torrents = load_json(torrents_file)
     return make_bencoded_response(torrents, 200)
 

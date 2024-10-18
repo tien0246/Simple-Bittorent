@@ -17,6 +17,10 @@ peer_id = hashlib.sha1(str(random.getrandbits(160)).encode()).digest()
 server_url = ''
 username = ''
 piece_length = 512 * 1024
+torrents_dir = 'torrents'
+
+if not os.path.exists(torrents_dir):
+    os.makedirs(torrents_dir)
 
 def create_torrent(path, tracker_url):
     if not os.path.exists(path):
@@ -78,10 +82,6 @@ def create_torrent(path, tracker_url):
 
     info = OrderedDict(sorted(info.items()))
 
-    bencoded_info = bencodepy.encode(info)
-    info_hash = hashlib.sha1(bencoded_info).hexdigest()
-    print(f'Info hash: {info_hash}')
-
     torrent = OrderedDict()
     torrent[b'announce'] = tracker_url.encode('utf-8')
     torrent[b'creation date'] = int(time.time())
@@ -90,23 +90,21 @@ def create_torrent(path, tracker_url):
 
     torrent = OrderedDict(sorted(torrent.items()))
     torrent_file = bencodepy.encode(torrent)
-    torrent_filename = name.decode('utf-8') + '.torrent'
-    with open(torrent_filename, 'wb') as f:
+    torrent_filename = calculate_info_hash(info) + '.torrent'
+
+    torrent_path = os.path.join(torrents_dir, torrent_filename)
+    with open(torrent_path, 'wb') as f:
         f.write(torrent_file)
 
-def calculate_info_hash(torrent_path):
-    with open(torrent_path, 'rb') as f:
-        torrent = bencodepy.decode(f.read())
-        info = torrent[b'info']
-        info = bencodepy.encode(info)
-        return hashlib.sha1(info).hexdigest()
+def calculate_info_hash(info):
+    return hashlib.sha1(bencodepy.encode(info)).hexdigest()
 
 def upload_torrent(torrent_path):
     url = f"{server_url}/upload_torrent"
     file = {'torrent': open(torrent_path, 'rb')}
     torrent = bencodepy.decode(open(torrent_path, 'rb').read())
     data = {
-        'info_hash': calculate_info_hash(torrent_path),
+        'info_hash': calculate_info_hash(torrent[b'info']),
         'name': torrent[b'info'][b'name'].decode(),
         'file_size': torrent[b'info'][b'length']
     }
@@ -122,6 +120,22 @@ def upload_torrent(torrent_path):
     except Exception as e:
         print("An error occurred:", e)
 
+def download_torrent(info_hash):
+    url = f"{server_url}/download_torrent/{info_hash}"
+    try:
+        response = session.get(url)
+        if response.status_code == 200:
+            torrent_filename = info_hash + '.torrent'
+            torrent_path = os.path.join(torrents_dir, torrent_filename)
+            with open(torrent_path, 'wb') as f:
+                f.write(response.content)
+            print("Torrent downloaded successfully")
+        else:
+            print("Failed to download torrent:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+    except requests.exceptions.ConnectionError:
+        print("Failed to connect to server")
+    except Exception as e:
+        print("An error occurred:", e)
 
 
 
@@ -177,7 +191,7 @@ def list_torrents():
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
 if __name__ == '__main__':
-    server_url = 'http://localhost:8000'
+    server_url = 'http://0.0.0.0:8000'
     while True:
         print("1. Register")
         print("2. Login")
@@ -185,7 +199,8 @@ if __name__ == '__main__':
         print("4. List torrents")
         print("5. Create torrent")
         print("6. Upload torrent")
-        print("7. Exit")
+        print("7. Download torrent")
+        print("8. Exit")
         choice = input("Enter choice: ")
 
         if choice == '1':
@@ -208,6 +223,9 @@ if __name__ == '__main__':
             torrent_path = input("Enter path to torrent file: ")
             upload_torrent(torrent_path)
         elif choice == '7':
+            info_hash = input("Enter info hash: ")
+            download_torrent(info_hash)
+        elif choice == '8':
             break
         else:
             print("Invalid choice")

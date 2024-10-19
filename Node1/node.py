@@ -23,9 +23,40 @@ if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
 
 class Connection:
-    def __init__(self, info_hash, client_peer_id):
+    def __init__(self, info_hash, client_peer_id, pieces, num_pieces):
         self.info_hash = info_hash
         self.client_peer_id = client_peer_id
+        self.pieces = pieces
+        self.num_pieces = num_pieces
+        self.lock = threading.Lock()
+
+    def send_message(self, sock, msg_id, payload=b''):
+        length = 1 + len(payload)
+        message = struct.pack("!I", length) + struct.pack("!B", msg_id) + payload
+        with self.lock:
+            sock.sendall(message)
+
+    def receive_message(self, sock):
+        try:
+            length_bytes = self._recv_all(sock, 4)
+            if not length_bytes:
+                return None, None
+            length = struct.unpack("!I", length_bytes)[0]
+            if length == 0:
+                return None, None
+
+            msg_id_bytes = self._recv_all(sock, 1)
+            if not msg_id_bytes:
+                return None, None
+            msg_id = struct.unpack("!B", msg_id_bytes)[0]
+
+            payload = b''
+            if length > 1:
+                payload = self._recv_all(sock, length - 1)
+            return msg_id, payload
+        except Exception as e:
+            print("Failed to receive message:", e)
+            return None, None
 
     def create_handshake_message(self):
         pstr = b"BitTorrent protocol"
@@ -33,6 +64,55 @@ class Connection:
         reserved = b'\x00' * 8
         handshake = struct.pack("!B", pstrlen) + pstr + reserved + self.info_hash + self.client_peer_id
         return handshake
+    
+    def create_bitfield(pieces):
+        bitfield = bytearray()
+        byte = 0
+        for i, piece in enumerate(pieces):
+            if piece:
+                byte |= (1 << (7 - (i % 8)))
+            if (i % 8) == 7:
+                bitfield.append(byte)
+                byte = 0
+        if len(pieces) % 8 != 0:
+            bitfield.append(byte)
+        return bytes(bitfield)
+    
+    def parse_bitfield(bitfield, num_pieces):
+        peer_pieces = [False] * num_pieces
+        for i in range(num_pieces):
+            byte_index = i // 8
+            bit_index = 7 - (i % 8)
+            if byte_index < len(bitfield):
+                if bitfield[byte_index] & (1 << bit_index):
+                    peer_pieces[i] = True
+        return peer_pieces
+    
+    def process_message(self, sock, msg_id, payload):
+        if msg_id == 0:
+            print("Choked")
+        elif msg_id == 1:
+            print("Unchoked")
+        elif msg_id == 2:
+            print("Interested")
+        elif msg_id == 3:
+            print("Not interested")
+            sock.close()
+        elif msg_id == 4:
+            print("Have")
+        elif msg_id == 5:
+            print("Bitfield")
+            self.pieces = self.parse_bitfield(payload, self.num_pieces)
+        elif msg_id == 6:
+            print("Request")
+        elif msg_id == 7:
+            print("Piece")
+        elif msg_id == 8:
+            print("Cancel")
+        elif msg_id == 9:
+            print("Port")
+        else:
+            print("Unknown message ID")
 
     def connect_to_peer(self, peer_ip, peer_port, peer_id):
         try:
@@ -95,11 +175,14 @@ class Connection:
 
             print(f"Handshake successful with peer {client_addr}")
 
+            bitfield_message = self.create_bitfield(self.pieces)
+            self.send_message(client_sock, 5, bitfield_message)
+
             while True:
-                data = client_sock.recv(1024)
-                if not data:
+                msg_id, payload = self.receive_message(client_sock)
+                if msg_id is None:
                     break
-                print(f"Received data from {client_addr}: {data.decode()}")
+                self.process_message(client_sock, msg_id, payload)
 
         except Exception as e:
             print(f"Error occurred while handling client {client_addr}: {e}")

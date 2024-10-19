@@ -23,40 +23,37 @@ if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
 
 class Connection:
-    def __init__(self, info_hash, peer_id):
+    def __init__(self, info_hash, client_peer_id):
         self.info_hash = info_hash
-        self.peer_id = peer_id
+        self.client_peer_id = client_peer_id
 
     def create_handshake_message(self):
-        # Protocol name
         pstr = b"BitTorrent protocol"
         pstrlen = len(pstr)
-        
-        # Reserved bytes (8 bytes set to 0)
         reserved = b'\x00' * 8
-        
-        # Construct handshake
-        handshake = struct.pack("!B", pstrlen) + pstr + reserved + self.info_hash + self.peer_id.encode()
+        handshake = struct.pack("!B", pstrlen) + pstr + reserved + self.info_hash + self.client_peer_id
         return handshake
 
-    def connect_to_peer(self, peer_ip, peer_port):
+    def connect_to_peer(self, peer_ip, peer_port, peer_id):
         try:
-            # Create a TCP socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((peer_ip, peer_port))
-            
-            # Send handshake
+
             handshake_message = self.create_handshake_message()
             sock.sendall(handshake_message)
-            
-            # Receive and verify handshake response
-            response = sock.recv(68)  # Handshake length is 68 bytes
-            if len(response) < 68:
+
+            response = sock.recv(68)
+
+            if len(response) != 68:
                 print("Failed to receive a proper handshake response.")
                 sock.close()
                 return None
             
-            # Parse the received handshake
+            if response[:20] != handshake_message[:20]:
+                print("Invalid handshake received. Closing connection.")
+                sock.close()
+                return None
+
             received_info_hash = response[28:48]
             received_peer_id = response[48:68]
             
@@ -64,42 +61,45 @@ class Connection:
                 print("Info hash mismatch. Closing connection.")
                 sock.close()
                 return None
+
+            if received_peer_id != peer_id:
+                print("Connected wrong peer. Closing connection.")
+                sock.close()
+                return None
             
             print(f"Connected to peer {peer_ip}:{peer_port}")
-            
-            # Continue communication (listening and sending messages)
+
             return sock
         except Exception as e:
             print(f"Failed to connect to peer {peer_ip}:{peer_port}: {e}")
             return None
         
-    def handle_client(client_sock, client_addr, info_hash, create_handshake_message):
+    def handle_client(self, client_sock, client_addr, info_hash, create_handshake_message):
         try:
             print(f"Received connection from {client_addr}")
 
-            # Receive the handshake message from the connecting peer
             handshake = client_sock.recv(68)
             if len(handshake) != 68:
                 print("Invalid handshake received. Closing connection.")
                 client_sock.close()
                 return
 
-            # Extract and verify info_hash and peer_id
             received_info_hash = handshake[28:48]
             if received_info_hash != info_hash:
                 print("Info hash mismatch. Disconnecting.")
                 client_sock.close()
                 return
 
-            # Send back a handshake message to acknowledge the connection
             response_handshake = create_handshake_message()
             client_sock.send(response_handshake)
 
             print(f"Handshake successful with peer {client_addr}")
-            # Now the connection is established, and further communication can proceed
 
-            # Close the connection for demonstration
-            client_sock.close()
+            while True:
+                data = client_sock.recv(1024)
+                if not data:
+                    break
+                print(f"Received data from {client_addr}: {data.decode()}")
 
         except Exception as e:
             print(f"Error occurred while handling client {client_addr}: {e}")
@@ -108,19 +108,16 @@ class Connection:
 
     def listen_for_handshake(self, port):
         try:
-            # Create a server socket to listen for incoming connections
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            server_sock.bind(('0.0.0.0', port))
+            server_sock.bind(('', port))
             server_sock.listen(5)
             print(f"Listening for incoming connections on port {port}...")
 
             while True:
-                # Accept incoming connections
                 client_sock, client_addr = server_sock.accept()
 
-                # Create a new thread to handle the client connection
                 client_thread = threading.Thread(
-                    target=handle_client, 
+                    target=self.handle_client,
                     args=(client_sock, client_addr, self.info_hash, self.create_handshake_message)
                 )
                 client_thread.start()
@@ -131,11 +128,21 @@ class Connection:
             server_sock.close()
 
     def start_server_in_thread(self, port):
-        # Create a thread to run the server
         server_thread = threading.Thread(target=self.listen_for_handshake, args=(port,))
-        # server_thread.daemon = True  # Make the thread a daemon so it exits when the main program exits
+        server_thread.daemon = True
         server_thread.start()
         print(f"Server started on port {port} in a separate thread.")
+
+    def run(self):
+        peer_ip = '0.0.0.0'
+        peer_port = 9001
+        peer_id = bytes.fromhex(input("Enter peer ID: "))
+        s = self.connect_to_peer(peer_ip, peer_port, peer_id)
+        if s:
+            s.send(b'Hello, world!')
+            s.close()
+        else:
+            print("Failed to connect to peer")
 
 def create_torrent(path, tracker_url, output_file=None):
     if not os.path.exists(path):
@@ -431,19 +438,22 @@ if __name__ == '__main__':
             elif choice == '8':
                 print(announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0))
             elif choice == '9':
-                peer_ip = input("Enter peer IP: ")
-                peer_port = int(input("Enter peer port: "))
-                info_hash = bytes.fromhex(input("Enter info hash (hex): "))
-                connect = Connection(info_hash, peer_id)
-                print(connect.create_handshake_message())
-                connect.connect_to_peer(peer_ip, peer_port)
+                # peer_ip = input("Enter peer IP: ")
+                # peer_port = int(input("Enter peer port: "))
+                info_hash = bytes.fromhex('95acaa0905b98ea184ea9bd2d7c2c916421cbd4c')
+                connect = Connection(info_hash, bytes.fromhex(peer_id))
+                connect.run()
             elif choice == '10':
-                print("Listening at port 9001...")
-                port = int(input("Enter peer port: "))
-                info_hash = bytes.fromhex(input("Enter info hash (hex): "))
-                connect = Connection(info_hash, peer_id)
-                connect.listen_for_handshake(port)
-                break
+                # port = int(input("Enter peer port: "))
+                port = 9001
+                print("Listening on port", port)
+                print("Peer ID:", peer_id)
+                # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
+                info_hash = bytes.fromhex('95acaa0905b98ea184ea9bd2d7c2c916421cbd4c')
+                peerid = bytes.fromhex(peer_id)
+                connect = Connection(info_hash, peerid)
+                # connect.listen_for_handshake(port)
+                connect.start_server_in_thread(port)
             else:
                 print("Invalid choice")
     except KeyboardInterrupt:

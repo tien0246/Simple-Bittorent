@@ -36,6 +36,15 @@ class Connection:
         with self.lock:
             sock.sendall(message)
 
+    def _recv_all(self, sock, n):
+        data = b''
+        while len(data) < n:
+            packet = sock.recv(n - len(data))
+            if not packet:
+                return None
+            data += packet
+        return data
+
     def receive_message(self, sock):
         try:
             length_bytes = self._recv_all(sock, 4)
@@ -65,7 +74,7 @@ class Connection:
         handshake = struct.pack("!B", pstrlen) + pstr + reserved + self.info_hash + self.client_peer_id
         return handshake
     
-    def create_bitfield(pieces):
+    def create_bitfield(self, pieces):
         bitfield = bytearray()
         byte = 0
         for i, piece in enumerate(pieces):
@@ -78,7 +87,7 @@ class Connection:
             bitfield.append(byte)
         return bytes(bitfield)
     
-    def parse_bitfield(bitfield, num_pieces):
+    def parse_bitfield(self, bitfield, num_pieces):
         peer_pieces = [False] * num_pieces
         for i in range(num_pieces):
             byte_index = i // 8
@@ -88,11 +97,24 @@ class Connection:
                     peer_pieces[i] = True
         return peer_pieces
     
+    def send_interested(self, sock, have_pieces):
+        interested = False
+        for i in range(self.num_pieces):
+            if not self.pieces[i] and have_pieces[i]:
+                interested = True
+                break
+        if interested:
+            self.send_message(sock, 2)
+            print("Sent Interested")
+        else:
+            self.send_message(sock, 3)
+            print("Sent Not Interested")
+    
     def process_message(self, sock, msg_id, payload):
         if msg_id == 0:
-            print("Choked")
+            pass
         elif msg_id == 1:
-            print("Unchoked")
+            pass
         elif msg_id == 2:
             print("Interested")
         elif msg_id == 3:
@@ -102,7 +124,8 @@ class Connection:
             print("Have")
         elif msg_id == 5:
             print("Bitfield")
-            self.pieces = self.parse_bitfield(payload, self.num_pieces)
+            have_pieces = self.parse_bitfield(payload, self.num_pieces)
+            self.send_interested(sock, have_pieces)
         elif msg_id == 6:
             print("Request")
         elif msg_id == 7:
@@ -180,6 +203,7 @@ class Connection:
 
             while True:
                 msg_id, payload = self.receive_message(client_sock)
+                print(f"Received message ID {msg_id}")
                 if msg_id is None:
                     break
                 self.process_message(client_sock, msg_id, payload)
@@ -222,10 +246,11 @@ class Connection:
         peer_id = bytes.fromhex(input("Enter peer ID: "))
         s = self.connect_to_peer(peer_ip, peer_port, peer_id)
         if s:
-            s.send(b'Hello, world!')
-            s.close()
-        else:
-            print("Failed to connect to peer")
+            while True:
+                msg_id, payload = self.receive_message(s)
+                if msg_id is None:
+                    break
+                self.process_message(s, msg_id, payload)
 
 def create_torrent(path, tracker_url, output_file=None):
     if not os.path.exists(path):
@@ -524,7 +549,7 @@ if __name__ == '__main__':
                 # peer_ip = input("Enter peer IP: ")
                 # peer_port = int(input("Enter peer port: "))
                 info_hash = bytes.fromhex('95acaa0905b98ea184ea9bd2d7c2c916421cbd4c')
-                connect = Connection(info_hash, bytes.fromhex(peer_id))
+                connect = Connection(info_hash, bytes.fromhex(peer_id), [False] * 10, 10)
                 connect.run()
             elif choice == '10':
                 # port = int(input("Enter peer port: "))
@@ -534,7 +559,7 @@ if __name__ == '__main__':
                 # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
                 info_hash = bytes.fromhex('95acaa0905b98ea184ea9bd2d7c2c916421cbd4c')
                 peerid = bytes.fromhex(peer_id)
-                connect = Connection(info_hash, peerid)
+                connect = Connection(info_hash, peerid, [True] * 10, 10)
                 # connect.listen_for_handshake(port)
                 connect.start_server_in_thread(port)
             else:

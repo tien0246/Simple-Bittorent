@@ -240,7 +240,6 @@ class Connection:
                 interested = True
                 print(i)
                 self.request_pieces.append(i)
-                break
         if interested:
             self.send_message(sock, 2)
             print("Sent Interested")
@@ -533,6 +532,7 @@ class Connection:
                 current_offset += file_length
     
     def start_request(self, sock, begin = 0):
+        print
         if not self.request_pieces:
             print("No pieces left to request.")
             return
@@ -552,31 +552,32 @@ class Connection:
         block = payload[8:]
 
         print(f"Received piece for index {piece_index}, begin {begin}, length {len(block)} bytes")
-
-        # Store the block in the appropriate location
-        if self.store_piece_block(piece_index, begin, block):
-            self.request_pieces.pop(0)
-            self.start_request(sock)
-        else:
-            if begin + len(block) == self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else self.torrent.total_length % self.torrent.piece_length:
-                begin = 0
-                if self.retry_piece(piece_index):
-                    self.start_request(sock, begin)
-                else:
-                    print(f"\nĐã đạt số lần retry tối đa cho piece {piece_index}. Tải ở peer khác.")
-                    self.send_message(sock, 3)
-                    sock.close()
+        try:
+            # Store the block in the appropriate location
+            if self.store_piece_block(piece_index, begin, block):
+                self.request_pieces.pop(0)
+                self.start_request(sock)
             else:
-                self.start_request(sock, begin + len(block))
+                if begin + len(block) == self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else self.torrent.total_length % self.torrent.piece_length:
+                    begin = 0
+                    if self.retry_piece(piece_index):
+                        self.start_request(sock, begin)
+                    else:
+                        print(f"\nĐã đạt số lần retry tối đa cho piece {piece_index}. Tải ở peer khác.")
+                        self.send_message(sock, 3)
+                        sock.close()
+                else:
+                    self.start_request(sock, begin + len(block))
+        except Exception as e:
+            print(f"Error handling piece {piece_index}: {e}") 
+            return None
 
     def store_piece_block(self, piece_index, begin, block):
         # Ensure that we have a structure to keep track of downloaded blocks
         # if piece_index not in self.downloaded_block:
         #     self.downloaded_block[piece_index] = {}
-
         # Store the block using the `begin` offset as the key
         self.downloaded_block[piece_index][begin] = block
-
         # Check if we have all blocks for the piece
         is_piece_complete = self.is_piece_complete(piece_index)
         if is_piece_complete:

@@ -1,3 +1,4 @@
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import socket
 import requests
@@ -22,16 +23,137 @@ torrents_dir = 'torrents'
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
 
-class Connection:
-    def __init__(self, info_hash, client_peer_id, pieces, num_pieces):
-        self.info_hash = info_hash
-        self.client_peer_id = client_peer_id
-        self.pieces = pieces
-        self.request_pieces = []
-        self.num_pieces = num_pieces
-        self.lock = threading.Lock()
-        self.peers = {}
+class Torrent:
+    def __init__(self, torrent_path, pieces = None):
+        self.torrent_path = torrent_path
+        torrent_data = parse_torrent_file(torrent_path)
+        self.info = torrent_data['info']
+        self.info_hash = torrent_data['info_hash']
+        self.piece_length = torrent_data['piece_length']
+        self.pieces = torrent_data['pieces']
+        self.num_pieces = torrent_data['num_pieces']
+        self.total_length = torrent_data['total_length']
+        self.name = torrent_data['name']
+        self.piece_hashes = [self.pieces[i*20:(i+1)*20] for i in range(self.num_pieces)]
+        if not pieces:
+            self.have_pieces = [False] * self.num_pieces 
+        else:
+            self.have_pieces = pieces
 
+def create_torrent(path, tracker_url, output_file=None):
+    if not os.path.exists(path):
+        print("File or directory does not exist")
+        return
+
+    pieces = []
+    name = os.path.basename(path).encode('utf-8')
+
+    if os.path.isfile(path):
+        # Single file
+        file_size = os.path.getsize(path)
+
+        with open(path, 'rb') as f:
+            while True:
+                piece = f.read(piece_length)
+                if not piece:
+                    break
+                pieces.append(hashlib.sha1(piece).digest())
+
+        pieces_concatenated = b''.join(pieces)
+
+        info = {
+            'length': file_size,
+            'name': name,
+            'piece length': piece_length,
+            'pieces': pieces_concatenated
+        }
+
+    else:
+        # Multiple files
+        files = []
+        total_size = 0
+
+        for root, _, filenames in os.walk(path):
+            for filename in filenames:
+                file_path = os.path.join(root, filename)
+                file_size = os.path.getsize(file_path)
+                total_size += file_size
+                relative_path = os.path.relpath(file_path, path)
+                path_components = [component.encode('utf-8') for component in relative_path.split(os.sep)]
+                files.append({'length': file_size, 'path': path_components})
+
+                with open(file_path, 'rb') as f:
+                    while True:
+                        piece = f.read(piece_length)
+                        if not piece:
+                            break
+                        if len(piece) < piece_length and f != filenames[-1]:
+                            piece += f.read(piece_length - len(piece))
+                        pieces.append(hashlib.sha1(piece).digest())
+
+        pieces_concatenated = b''.join(pieces)
+
+        info = {
+            'files': files,
+            'name': name,
+            'piece length': piece_length,
+            'pieces': pieces_concatenated
+        }
+
+    torrent = {
+        'announce': tracker_url,
+        'creation date': int(time.time()),
+        'created by': username,
+        'info': info
+    }
+
+    print(calculate_info_hash(info))
+
+    torrent_file = bencodepy.encode(torrent)
+    torrent_filename = (output_file or calculate_info_hash(info)) + '.torrent'
+
+    torrent_path = os.path.join(torrents_dir, torrent_filename)
+    with open(torrent_path, 'wb') as f:
+        f.write(torrent_file)
+
+def parse_torrent_file(torrent_path):
+    with open(torrent_path, 'rb') as f:
+        torrent_data = f.read()
+    meta = bencodepy.decode(torrent_data)
+    info = meta[b'info']
+    info_hash = calculate_info_hash(info)
+    piece_length = info[b'piece length']
+    pieces = info[b'pieces']
+    num_pieces = len(pieces) // 20
+    total_length = 0
+    if b'length' in info:
+        total_length = info[b'length']
+    elif b'files' in info:
+        for file_info in info[b'files']:
+            total_length += file_info[b'length']
+    else:
+        raise ValueError("Invalid torrent file: no length or files")
+    name = info[b'name'].decode('utf-8')
+    return {
+        'info': info,
+        'info_hash': info_hash,
+        'piece_length': piece_length,
+        'pieces': pieces,
+        'num_pieces': num_pieces,
+        'total_length': total_length,
+        'name': name
+    }
+
+def calculate_info_hash(info):
+    return hashlib.sha1(bencodepy.encode(info)).hexdigest()
+class Connection:
+    def __init__(self, torrent, client_peer_id):
+        self.torrent = torrent
+        self.client_peer_id = client_peer_id
+        self.request_pieces = [dict() for x in range (torrent.num_pieces)]
+        self.lock = threading.Lock()
+        self.downloaded_pieces = {}
+        self.peers = {}
     def send_message(self, sock, msg_id, payload=b''):
         length = 1 + len(payload)
         message = struct.pack("!I", length) + struct.pack("!B", msg_id) + payload
@@ -73,7 +195,7 @@ class Connection:
         pstr = b"BitTorrent protocol"
         pstrlen = len(pstr)
         reserved = b'\x00' * 8
-        handshake = struct.pack("!B", pstrlen) + pstr + reserved + self.info_hash + self.client_peer_id
+        handshake = struct.pack("!B", pstrlen) + pstr + reserved + bytes.fromhex(self.torrent.info_hash) + self.client_peer_id
         return handshake
     
     def create_bitfield(self, pieces):
@@ -101,13 +223,11 @@ class Connection:
     
     def send_interested(self, sock, have_pieces):
         interested = False
-        self.request_pieces = []
-        for i in range(self.num_pieces):
+        for i in range(self.torrent.num_pieces):
             if not self.pieces[i] and have_pieces[i]:
                 interested = True
                 print(i)
                 self.request_pieces.append(i)
-                break
         if interested:
             self.send_message(sock, 2)
             print("Sent Interested")
@@ -131,14 +251,14 @@ class Connection:
             print("Have")
         elif msg_id == 5:
             print("Bitfield")
-            have_pieces = self.parse_bitfield(payload, self.num_pieces)
+            have_pieces = self.parse_bitfield(payload, self.torrent.num_pieces)
             self.send_interested(sock, have_pieces)
         elif msg_id == 6:
             print("Request")
             self.handle_request(sock, payload)
         elif msg_id == 7:
             print("Piece")
-            self.request_next_piece(sock)
+            self.handle_piece(payload)
         elif msg_id == 8:
             print("Cancel")
         elif msg_id == 9:
@@ -187,16 +307,21 @@ class Connection:
             print(f"Failed to connect to peer {peer_ip}:{peer_port}: {e}")
             return None
 
-    def run(self, peer_list):
-        threads = []
-        for peer_ip, peer_port, peer_id in peer_list:
-            thread = threading.Thread(target=self.handle_peer_connection, args=(peer_ip, peer_port, peer_id))
-            thread.start()
-            threads.append(thread)
-
-        # Optional: Join all threads to ensure they complete
-        for thread in threads:
-            thread.join()
+    def run(self, peers):
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            while not all(self.pieces):
+                # Lọc bỏ peer là chính mình
+                peers = [peer for peer in peers if peer.get('peer_id') != self.peer_id and not (peer['ip'] == '127.0.0.1' and peer['port'] == self.port)]
+                if not peers:
+                    print("Không có peers nào để kết nối. Đang chờ...")
+                    time.sleep(5)
+                    continue
+                for peer in peers:
+                    if all(self.pieces):
+                        break
+                    self.handle_peer_connection(peer.peer_ip, peer.peer_port, peer.peer_id)
+            executor.shutdown(wait=True)
+            
     def handle_peer_connection(self, peer_ip, peer_port, peer_id):
         try:
             sock = self.connect_to_peer(peer_ip, peer_port, peer_id)
@@ -399,114 +524,6 @@ class Connection:
         peer_port = 9001
         peer_id = bytes.fromhex(input("Enter peer ID: "))
         self.handle_peer_connection(peer_ip, peer_port, peer_id)
-    
-
-def create_torrent(path, tracker_url, output_file=None):
-    if not os.path.exists(path):
-        print("File or directory does not exist")
-        return
-
-    pieces = []
-    name = os.path.basename(path).encode('utf-8')
-
-    if os.path.isfile(path):
-        # Single file
-        file_size = os.path.getsize(path)
-
-        with open(path, 'rb') as f:
-            while True:
-                piece = f.read(piece_length)
-                if not piece:
-                    break
-                pieces.append(hashlib.sha1(piece).digest())
-
-        pieces_concatenated = b''.join(pieces)
-
-        info = {
-            'length': file_size,
-            'name': name,
-            'piece length': piece_length,
-            'pieces': pieces_concatenated
-        }
-
-    else:
-        # Multiple files
-        files = []
-        total_size = 0
-
-        for root, _, filenames in os.walk(path):
-            for filename in filenames:
-                file_path = os.path.join(root, filename)
-                file_size = os.path.getsize(file_path)
-                total_size += file_size
-                relative_path = os.path.relpath(file_path, path)
-                path_components = [component.encode('utf-8') for component in relative_path.split(os.sep)]
-                files.append({'length': file_size, 'path': path_components})
-
-                with open(file_path, 'rb') as f:
-                    while True:
-                        piece = f.read(piece_length)
-                        if not piece:
-                            break
-                        if len(piece) < piece_length and f != filenames[-1]:
-                            piece += f.read(piece_length - len(piece))
-                        pieces.append(hashlib.sha1(piece).digest())
-
-        pieces_concatenated = b''.join(pieces)
-
-        info = {
-            'files': files,
-            'name': name,
-            'piece length': piece_length,
-            'pieces': pieces_concatenated
-        }
-
-    torrent = {
-        'announce': tracker_url,
-        'creation date': int(time.time()),
-        'created by': username,
-        'info': info
-    }
-
-    print(calculate_info_hash(info))
-
-    torrent_file = bencodepy.encode(torrent)
-    torrent_filename = (output_file or calculate_info_hash(info)) + '.torrent'
-
-    torrent_path = os.path.join(torrents_dir, torrent_filename)
-    with open(torrent_path, 'wb') as f:
-        f.write(torrent_file)
-
-def parse_torrent_file(torrent_path):
-    with open(torrent_path, 'rb') as f:
-        torrent_data = f.read()
-    meta = bencodepy.decode(torrent_data)
-    info = meta[b'info']
-    info_hash = calculate_info_hash(info)
-    piece_length = info[b'piece length']
-    pieces = info[b'pieces']
-    num_pieces = len(pieces) // 20
-    total_length = 0
-    if b'length' in info:
-        total_length = info[b'length']
-    elif b'files' in info:
-        for file_info in info[b'files']:
-            total_length += file_info[b'length']
-    else:
-        raise ValueError("Invalid torrent file: no length or files")
-    name = info[b'name'].decode('utf-8')
-    return {
-        'info': info,
-        'info_hash': info_hash,
-        'piece_length': piece_length,
-        'pieces': pieces,
-        'num_pieces': num_pieces,
-        'total_length': total_length,
-        'name': name
-    }
-
-def calculate_info_hash(info):
-    return hashlib.sha1(bencodepy.encode(info)).hexdigest()
 
 def upload_torrent(torrent_path):
     url = f"{server_url}/upload_torrent"
@@ -621,6 +638,17 @@ def logout():
     else:
         print("Logout failed:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
+def format_size(bytes_size):
+    """Converts bytes to a more readable format (B, KB, MB, GB)."""
+    if bytes_size < 1024:
+        return f"{bytes_size} B"
+    elif bytes_size < 1024 ** 2:
+        return f"{bytes_size / 1024:.2f} KB"
+    elif bytes_size < 1024 ** 3:
+        return f"{bytes_size / 1024 ** 2:.2f} MB"
+    else:
+        return f"{bytes_size / 1024 ** 3:.2f} GB"
+
 def list_torrents():
     url = server_url + '/list_torrents'
     response = session.get(url)
@@ -631,6 +659,7 @@ def list_torrents():
             torrent_info = {k.decode(): v for k, v in torrent_info.items()}
             print("Info Hash:", info_hash)
             print("Name:", torrent_info['name'].decode())
+            
             if 'path' in torrent_info:
                 print("Files:")
                 file_size = 0
@@ -638,10 +667,12 @@ def list_torrents():
                     path = file[b'path'] if b'path' in file else file['path']
                     length = file[b'length'] if b'length' in file else file['length']
                     file_size += length
-                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({length} bytes)")
-                print("File Size:", file_size, "bytes")
+                    # Print file path and size in a readable format
+                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({format_size(length)})")
+                print("Total File Size:", format_size(file_size))
             else:
-                print("File Size:", torrent_info['file_size'], "bytes")
+                print("File Size:", format_size(torrent_info['file_size']))
+            
             print("Uploaded by:", torrent_info['created_by'].decode())
             print("Date Uploaded:", time.ctime(torrent_info['date_uploaded']))
             print("Seeders:", torrent_info['seeder'])
@@ -652,11 +683,61 @@ def list_torrents():
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
 
+def start_as_seeder(torrent, peer_id):
+    """Khởi động chế độ Seeder"""
+    conn = Connection(torrent, peer_id)
+    conn.pieces = [True] * conn.torrent.num_pieces
+    try:
+        conn.filehandle = open(conn.torrent.name, 'rb')
+    except Exception as e:
+        print(f"Lỗi khi mở tệp để Seeder: {e}")
+        return
+
+    # Thông báo 'started' tới Tracker
+    port = peer_port
+    announce(conn.info_hash, 'started', port)
+
+    print(f"\nSeeder '{conn.peer_id}' đã sẵn sàng phục vụ tệp '{conn.torrent.name}'.")
+    conn.start_server_in_thread(port)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        # Thông báo 'stopped' tới Tracker khi dừng Seeder
+        announce(conn.info_hash, event = 'started', port = peer_port)
+        print("\nSeeder đã dừng.")
+        conn.file_handle.close()
+
+def start_as_leecher(torrent, peer_id, pieces = None):
+    """Khởi động chế độ Leecher"""
+    if not pieces:
+        pieces = conn.pieces = [False] * conn.torrent.num_pieces
+    conn = Connection(torrent, peer_id, pieces)
+    try:
+        conn.file_handle = open(conn.torrent.name, 'wb+')
+    except Exception as e:
+        print(f"Lỗi khi mở tệp để Leecher: {e}")
+        return
+
+    # Thông báo 'started' tới Tracker
+    peer_list = announce(conn.info_hash, event = 'started', port = peer_port)
+    
+    print(f"\nLeecher '{conn.client_peer_id}' bắt đầu tải xuống tệp '{conn.torrent.file}'.")
+    conn.run(peer_list)
+    # Thông báo 'stopped' tới Tracker khi hoàn tất tải xuống
+    announce(conn.info_hash, event = 'stop', port = peer_port)
+    conn.file_handle.close()
+    if all(conn.pieces):
+        print(f"\nFile '{conn.torrent.file}' đã được lưu thành công.")
+        conn.verify_file_hash()
+        start_as_seeder(torrent, peer_id)
+    else:
+        print("\nTải xuống chưa hoàn thành.")
 
 
 if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
-    server_url = 'http://0.0.0.0:8000'
+    server_url = 'http://127.0.0.1:8000'
     try:
         while True:
             print("1. Register")
@@ -693,25 +774,20 @@ if __name__ == '__main__':
                 info_hash = input("Enter info hash: ")
                 download_torrent(info_hash)
             elif choice == '8':
-                print(announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0))
+                print(announce("18a89755e51616c9e8e904ff360e364deb4b0922", "started", 9001, 0, 0, 0))
             elif choice == '9':
-                # peer_ip = input("Enter peer IP: ")
-                # peer_port = int(input("Enter peer port: "))
-                info_hash = bytes.fromhex('95acaa0905b98ea184ea9bd2d7c2c916421cbd4c')
-                connect = Connection(info_hash, bytes.fromhex(peer_id), [False] * 10, 10)
-                connect.run()
+                torrent_path = input("Enter path to torrent file: ")
+                torrent = parse_torrent_file(torrent_path)
+                peerid = peer_id
+                start_as_leecher(torrent, peerid)
             elif choice == '10':
-                # port = int(input("Enter peer port: "))
-                port = 9001
-                print("Listening on port", port)
-                print("Peer ID:", peer_id)
-                # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
-                info_hash = bytes.fromhex('95acaa0905b98ea184ea9bd2d7c2c916421cbd4c')
-                peerid = bytes.fromhex(peer_id)
-                connect = Connection(info_hash, peerid, [True] * 10, 10)
-                # connect.listen_for_handshake(port)
-                connect.start_server_in_thread(port)
+                torrent_path = input("Enter path to torrent file: ")
+                torrent = parse_torrent_file(torrent_path)
+                server_peer_id = peer_id
+                print("Peer ID:", server_peer_id)
+                start_as_seeder(torrent, server_peer_id)
+                
             else:
                 print("Invalid choice")
     except KeyboardInterrupt:
-        announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "stopped", 9001, 0, 0, 100)
+        announce("18a89755e51616c9e8e904ff360e364deb4b0922", "stopped", 9001, 0, 0, 100)

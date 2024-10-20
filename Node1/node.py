@@ -19,9 +19,13 @@ username = ''
 piece_length = 512 * 1024
 block_size = 16 * 1024
 torrents_dir = 'torrents'
+downloads_dir = 'downloads'
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
+if not os.path.exists(downloads_dir):
+    os.makedirs(downloads_dir)
+
 
 class Torrent:
     def __init__(self, torrent_path, pieces = None):
@@ -34,6 +38,7 @@ class Torrent:
         self.num_pieces = torrent_data['num_pieces']
         self.total_length = torrent_data['total_length']
         self.name = torrent_data['name']
+        self.paths = torrent_data['paths']
         self.pieces_have = [False] * self.num_pieces if pieces is None else pieces
         self.piece_hashes = [self.pieces[i*20:(i+1)*20] for i in range(self.num_pieces)]
     
@@ -123,11 +128,16 @@ def parse_torrent_file(torrent_path):
     pieces = info[b'pieces']
     num_pieces = len(pieces) // 20
     total_length = 0
+    paths = []
     if b'length' in info:
         total_length = info[b'length']
     elif b'files' in info:
+        paths = []
         for file_info in info[b'files']:
             total_length += file_info[b'length']
+            file_path = [p.decode() for p in file_info[b'path']]
+            paths.append({'length': file_info[b'length'], 'path': file_path})
+        
     else:
         raise ValueError("Invalid torrent file: no length or files")
     name = info[b'name'].decode('utf-8')
@@ -138,7 +148,8 @@ def parse_torrent_file(torrent_path):
         'pieces': pieces,
         'num_pieces': num_pieces,
         'total_length': total_length,
-        'name': name
+        'name': name,
+        'paths': paths
     }
 
 def calculate_info_hash(info):
@@ -440,10 +451,77 @@ class Connection:
         print(f"Sent piece index: {piece_index}, begin: {begin}, length: {len(piece_data)}")
 
     def get_piece_data(self, piece_index, begin, length):
-        # Example function to read piece data from disk or memory
-        # Implement this to suit your storage mechanism
-        piece_data = b'\x41' * length
-        return piece_data
+        byte_offset = piece_index * self.torrent.piece_length + begin
+        remaining_length = length
+        data = b''
+        current_offset = 0
+
+        if not self.torrent.paths:
+            # Single file
+            file_path = os.path.join(self.torrent.name)
+            with open(file_path, 'rb') as f:
+                f.seek(byte_offset)
+                data = f.read(length)
+        else:
+            # Multiple files
+            for file_info in self.torrent.paths:
+                file_length = file_info['length']
+                file_path = os.path.join(self.torrent.name, *file_info['path'])
+
+                if current_offset <= byte_offset < current_offset + file_length:
+                    file_offset = byte_offset - current_offset
+
+                    with open(file_path, 'rb') as f:
+                        f.seek(file_offset)
+                        data_chunk = f.read(min(remaining_length, file_length - file_offset))
+                        data += data_chunk
+
+                    remaining_length -= len(data_chunk)
+                    byte_offset += len(data_chunk)
+
+                    if remaining_length <= 0:
+                        break
+
+                current_offset += file_length
+
+        return data
+
+    def write_piece_data(self, piece_index, data):
+        byte_offset = piece_index * self.torrent.piece_length
+        remaining_data = data
+        current_offset = 0
+
+        downloads_folder = os.path.join(downloads_dir, self.torrent.name)
+
+        if not self.torrent.paths:
+            # Single file
+            file_path = os.path.join(downloads_folder)
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            with open(file_path, 'w+b') as f:
+                f.seek(byte_offset)
+                f.write(remaining_data)
+        else:
+            # Multiple files
+            for file_info in self.torrent.paths:
+                file_length = file_info['length']
+                file_path = os.path.join(downloads_folder, *file_info['path'])
+                os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+                if current_offset <= byte_offset < current_offset + file_length:
+                    file_offset = byte_offset - current_offset
+
+                    with open(file_path, 'w+b') as f:
+                        write_size = min(len(remaining_data), file_length - file_offset)
+                        f.seek(file_offset)
+                        f.write(remaining_data[:write_size])
+
+                    remaining_data = remaining_data[write_size:]
+                    byte_offset += write_size
+
+                    if not remaining_data:
+                        break
+
+                current_offset += file_length
     
     def start_request(self, sock, begin = 0):
         if not self.request_pieces:
@@ -512,7 +590,7 @@ class Connection:
         if hash == self.torrent.piece_hashes[piece_index]:
             print(f"Piece {piece_index} hash verified")
             # Save the complete piece to disk or add it to the in-memory cache
-            self.save_complete_piece(piece_index, complete_piece)
+            self.write_piece_data(piece_index, complete_piece)
 
             # Mark the piece as fully downloaded
             print(f"Piece {piece_index} fully downloaded and saved")
@@ -525,14 +603,14 @@ class Connection:
         print(f"Piece {piece_index} hash verification failed")
         return False
 
+    # def save_complete_piece(self, piece_index, complete_piece):
+        # # Example function to save a complete piece to disk
+        # # Implement this to suit your storage mechanism
+        # file_name = f"piece_{piece_index}.dat"
+        # with open(file_name, "wb") as file:
+        #     file.write(complete_piece)
+        # print(f"Piece {piece_index} saved to {file_name}")
 
-    def save_complete_piece(self, piece_index, complete_piece):
-        # Example function to save a complete piece to disk
-        # Implement this to suit your storage mechanism
-        file_name = f"piece_{piece_index}.dat"
-        with open(file_name, "wb") as file:
-            file.write(complete_piece)
-        print(f"Piece {piece_index} saved to {file_name}")
     def run(self):
         peer_ip = '127.0.0.1'
         peer_port = 9001
@@ -750,6 +828,7 @@ if __name__ == '__main__':
                 # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
                 peerid = bytes.fromhex(peer_id)
                 torrent = Torrent('torrents/54c9b37ce375bd009e5b768b260cf07b224a8456.torrent')
+                print(torrent.paths)
                 torrent.pieces_have = [True] * torrent.num_pieces
                 connect = Connection(torrent, peerid)
                 # connect.listen_for_handshake(port)

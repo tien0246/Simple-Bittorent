@@ -159,7 +159,7 @@ def calculate_info_hash(info):
 class Connection:
     def __init__(self, torrent, client_peer_id):
         self.torrent = torrent
-        self.client_peer_id = client_peer_id
+        self.client_peer_id = self.client_peer_id = bytes.fromhex(client_peer_id) if isinstance(client_peer_id, str) else client_peer_id
         self.lock = threading.Lock()
         self.request_pieces = []
         self.downloaded_block = [{} for _ in range(torrent.num_pieces)]
@@ -308,7 +308,7 @@ class Connection:
                 sock.close()
                 return None
 
-            if received_peer_id != peer_id:
+            if received_peer_id.hex() != peer_id:
                 print("Connected wrong peer. Closing connection.")
                 sock.close()
                 return None
@@ -321,7 +321,7 @@ class Connection:
             return None
 
     def run(self, peers):
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers = 5) as executor:
             while not all(self.torrent.pieces_have):
                 # Lọc bỏ peer là chính mình
                 peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id]
@@ -375,8 +375,7 @@ class Connection:
 
             print(f"Handshake successful with peer {client_addr}")
 
-            bitfield_message = self.create_bitfield(self.torrent.pieces_have
-            )
+            bitfield_message = self.create_bitfield(self.torrent.pieces_have)
             self.send_message(client_sock, 5, bitfield_message)
 
             while True:
@@ -463,13 +462,15 @@ class Connection:
         remaining_length = length
         data = b''
         current_offset = 0
+        print(length)
 
         if not self.torrent.paths:
             # Single file
             file_path = os.path.join(self.torrent.name)
-            with open(file_path, 'rb') as f:
-                f.seek(byte_offset)
-                data = f.read(length)
+            with self.lock:
+                with open(file_path, 'rb') as f:
+                    f.seek(byte_offset)
+                    data = f.read(length)
         else:
             # Multiple files
             for file_info in self.torrent.paths:
@@ -478,17 +479,17 @@ class Connection:
 
                 if current_offset <= byte_offset < current_offset + file_length:
                     file_offset = byte_offset - current_offset
+                    with self.lock:
+                        with open(file_path, 'rb') as f:
+                            f.seek(file_offset)
+                            data_chunk = f.read(min(remaining_length, file_length - file_offset))
+                            data += data_chunk
 
-                    with open(file_path, 'rb') as f:
-                        f.seek(file_offset)
-                        data_chunk = f.read(min(remaining_length, file_length - file_offset))
-                        data += data_chunk
+                        remaining_length -= len(data_chunk)
+                        byte_offset += len(data_chunk)
 
-                    remaining_length -= len(data_chunk)
-                    byte_offset += len(data_chunk)
-
-                    if remaining_length <= 0:
-                        break
+                        if remaining_length <= 0:
+                            break
 
                 current_offset += file_length
 
@@ -624,11 +625,11 @@ class Connection:
         #     file.write(complete_piece)
         # print(f"Piece {piece_index} saved to {file_name}")
 
-    def run(self):
-        peer_ip = '127.0.0.1'
-        peer_port = 9001
-        peer_id = bytes.fromhex(input("Enter peer ID: "))
-        self.handle_peer_connection(peer_ip, peer_port, peer_id)
+    # def run(self):
+    #     peer_ip = '127.0.0.1'
+    #     peer_port = 9001
+    #     peer_id = bytes.fromhex(input("Enter peer ID: "))
+    #     self.handle_peer_connection(peer_ip, peer_port, peer_id)
     # def run(self):
     #     peer_ip = '127.0.0.1'
     #     peer_port = 9001
@@ -802,17 +803,12 @@ def start_as_seeder(torrent, peer_id):
     """Khởi động chế độ Seeder"""
     conn = Connection(torrent, peer_id)
     conn.torrent.pieces_have = [True] * conn.torrent.num_pieces
-    try:
-        conn.file_handle = open(conn.torrent.name, 'rb')
-    except Exception as e:
-        print(f"Lỗi khi mở tệp để Seeder: {e}")
-        return
 
     # Thông báo 'started' tới Tracker
     announce(conn.torrent.info_hash, event = 'started', port = peer_port)
 
     print(f"\nSeeder đã sẵn sàng phục vụ tệp '{conn.torrent.name}'.")
-    conn.start_server_in_thread(port)
+    conn.start_server_in_thread(peer_port)
     try:
         while True:
             time.sleep(1)
@@ -820,26 +816,19 @@ def start_as_seeder(torrent, peer_id):
         # Thông báo 'stopped' tới Tracker khi dừng Seeder
         announce(conn.torrent.info_hash, event = 'started', port = peer_port)
         print("\nSeeder đã dừng.")
-        conn.file_handle.close()
 
 def start_as_leecher(torrent, peer_id, pieces = None):
     """Khởi động chế độ Leecher"""
 
     conn = Connection(torrent, peer_id)
-    try:
-        conn.file_handle = open(conn.torrent.name, 'wb+')
-    except Exception as e:
-        print(f"Lỗi khi mở tệp để Leecher: {e}")
-        return
 
     # Thông báo 'started' tới Tracker
     peer_list = announce(conn.torrent.info_hash, event = 'started', port = peer_port)
     print(f"\nLeecher '{peer_id}' bắt đầu tải xuống tệp '{conn.torrent.name}'.")
     conn.run(peer_list)
-    return
     # Thông báo 'stopped' tới Tracker khi hoàn tất tải xuống
     announce(conn.torrent.info_hash, event = 'stop', port = peer_port)
-    conn.file_handle.close()
+
     if all(conn.torrent.pieces_have):
         print(f"\nFile '{conn.torrent.name}' đã được lưu thành công.")
         start_as_seeder(torrent, peer_id)
@@ -892,8 +881,7 @@ if __name__ == '__main__':
                 start_as_leecher(torrent, peer_id)
             elif choice == '10':
                 # port = int(input("Enter peer port: "))
-                port = 9001
-                print("Listening on port", port)
+                print("Listening on port", peer_port)
                 print("Peer ID:", peer_id)
                 # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
                 peerid = bytes.fromhex(peer_id)

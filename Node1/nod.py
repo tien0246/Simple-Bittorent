@@ -286,7 +286,6 @@ class Connection:
         # Validate the request
         if self.validate_request(piece_index, begin, length):
             # Send the requested piece data
-            print('here')
             self.send_piece(sock, piece_index, begin, length)
         else:
             print("Invalid request. Ignoring.")
@@ -310,15 +309,16 @@ class Connection:
         piece_data = self.get_piece_data(piece_index, begin, length)
 
         # Construct the piece message (ID = 7)
-        msg_id = 7
-        message = struct.pack("!IBIII", len(piece_data) + 9, msg_id, piece_index, begin, piece_data)
-        self.send_message(sock, message)
+        payload = struct.pack("!II", piece_index, begin) + piece_data
+        self.send_message(sock, 7, payload)
 
         print(f"Sent piece index: {piece_index}, begin: {begin}, length: {len(piece_data)}")
 
     def get_piece_data(self, piece_index, begin, length):
-        # Fetch the piece data from disk or memory, starting at 'begin' with 'length' bytes
-        return self.pieces[piece_index][begin:begin + length]
+        # Example function to read piece data from disk or memory
+        # Implement this to suit your storage mechanism
+        piece_data = b'\x00' * length
+        return piece_data
     
     def request_next_piece(self, sock):
         """
@@ -395,7 +395,7 @@ class Connection:
         print(f"Piece {piece_index} saved to {file_name}")
 
     def run(self):
-        peer_ip = '10.0.247.157'
+        peer_ip = '0.0.0.0'
         peer_port = 9001
         peer_id = bytes.fromhex(input("Enter peer ID: "))
         self.handle_peer_connection(peer_ip, peer_port, peer_id)

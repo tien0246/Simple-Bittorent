@@ -23,15 +23,15 @@ if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
 
 class Connection:
-    def __init__(self, info_hash, client_peer_id, pieces, num_pieces):
-        self.info_hash = info_hash
+    def __init__(self, torrent, client_peer_id, pieces = None):
+        self.info_hash = torrent.info_hash
+        self.file = torrent.name
+        self.num_pieces = torrent.num_pieces
         self.client_peer_id = client_peer_id
         self.pieces = pieces
-        self.request_pieces = []
-        self.num_pieces = num_pieces
+        self.request_pieces = [dict() for x in range (torrent.num_pieces)]
         self.lock = threading.Lock()
         self.peers = {}
-
     def send_message(self, sock, msg_id, payload=b''):
         length = 1 + len(payload)
         message = struct.pack("!I", length) + struct.pack("!B", msg_id) + payload
@@ -621,6 +621,21 @@ def logout():
     else:
         print("Logout failed:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
+import os
+import time
+import bencodepy
+
+def format_size(bytes_size):
+    """Converts bytes to a more readable format (B, KB, MB, GB)."""
+    if bytes_size < 1024:
+        return f"{bytes_size} B"
+    elif bytes_size < 1024 ** 2:
+        return f"{bytes_size / 1024:.2f} KB"
+    elif bytes_size < 1024 ** 3:
+        return f"{bytes_size / 1024 ** 2:.2f} MB"
+    else:
+        return f"{bytes_size / 1024 ** 3:.2f} GB"
+
 def list_torrents():
     url = server_url + '/list_torrents'
     response = session.get(url)
@@ -631,6 +646,7 @@ def list_torrents():
             torrent_info = {k.decode(): v for k, v in torrent_info.items()}
             print("Info Hash:", info_hash)
             print("Name:", torrent_info['name'].decode())
+            
             if 'path' in torrent_info:
                 print("Files:")
                 file_size = 0
@@ -638,10 +654,12 @@ def list_torrents():
                     path = file[b'path'] if b'path' in file else file['path']
                     length = file[b'length'] if b'length' in file else file['length']
                     file_size += length
-                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({length} bytes)")
-                print("File Size:", file_size, "bytes")
+                    # Print file path and size in a readable format
+                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({format_size(length)})")
+                print("Total File Size:", format_size(file_size))
             else:
-                print("File Size:", torrent_info['file_size'], "bytes")
+                print("File Size:", format_size(torrent_info['file_size']))
+            
             print("Uploaded by:", torrent_info['created_by'].decode())
             print("Date Uploaded:", time.ctime(torrent_info['date_uploaded']))
             print("Seeders:", torrent_info['seeder'])
@@ -652,11 +670,60 @@ def list_torrents():
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
 
+def start_as_seeder(torrent, peer_id):
+    """Khởi động chế độ Seeder"""
+    conn = Connection(torrent, peer_id)
+    conn.pieces = [True] * conn.torrent.num_pieces
+    try:
+        conn.filehandle = open(conn.torrent.name, 'rb')
+    except Exception as e:
+        print(f"Lỗi khi mở tệp để Seeder: {e}")
+        return
+
+    # Thông báo 'started' tới Tracker
+    announce(conn.info_hash, event = 'started', port = peer_port)
+
+    print(f"\nSeeder '{conn.peer_id}' đã sẵn sàng phục vụ tệp '{conn.torrent.name}'.")
+    conn.start_server_in_thread(port)
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        # Thông báo 'stopped' tới Tracker khi dừng Seeder
+        announce(conn.info_hash, event = 'started', port = peer_port)
+        print("\nSeeder đã dừng.")
+        conn.file_handle.close()
+
+def start_as_leecher(torrent, peer_id, pieces = None):
+    """Khởi động chế độ Leecher"""
+    if not pieces:
+        pieces = conn.pieces = [False] * conn.torrent.num_pieces
+    conn = Connection(torrent, peer_id, pieces)
+    try:
+        conn.file_handle = open(conn.torrent.name, 'wb+')
+    except Exception as e:
+        print(f"Lỗi khi mở tệp để Leecher: {e}")
+        return
+
+    # Thông báo 'started' tới Tracker
+    peer_list = announce(conn.info_hash, event = 'started', port = peer_port)
+    
+    print(f"\nLeecher '{conn.client_peer_id}' bắt đầu tải xuống tệp '{conn.torrent.file}'.")
+    conn.start_server_in_thread(port)
+    conn.run(peer_list)
+    # Thông báo 'stopped' tới Tracker khi hoàn tất tải xuống
+    announce(conn.info_hash, event = 'stop', port = peer_port)
+    conn.file_handle.close()
+    if all(conn.pieces):
+        print(f"\nFile '{conn.torrent.file}' đã được lưu thành công.")
+        conn.verify_file_hash()
+    else:
+        print("\nTải xuống chưa hoàn thành.")
 
 
 if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
-    server_url = 'http://0.0.0.0:8000'
+    server_url = 'http://127.0.0.1:8000'
     try:
         while True:
             print("1. Register")
@@ -693,7 +760,7 @@ if __name__ == '__main__':
                 info_hash = input("Enter info hash: ")
                 download_torrent(info_hash)
             elif choice == '8':
-                print(announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0))
+                print(announce("18a89755e51616c9e8e904ff360e364deb4b0922", "started", 9001, 0, 0, 0))
             elif choice == '9':
                 # peer_ip = input("Enter peer IP: ")
                 # peer_port = int(input("Enter peer port: "))

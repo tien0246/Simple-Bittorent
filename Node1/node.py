@@ -663,6 +663,17 @@ def logout():
     else:
         print("Logout failed:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
+def format_size(bytes_size):
+    """Converts bytes to a more readable format (B, KB, MB, GB)."""
+    if bytes_size < 1024:
+        return f"{bytes_size} B"
+    elif bytes_size < 1024 ** 2:
+        return f"{bytes_size / 1024:.2f} KB"
+    elif bytes_size < 1024 ** 3:
+        return f"{bytes_size / 1024 ** 2:.2f} MB"
+    else:
+        return f"{bytes_size / 1024 ** 3:.2f} GB"
+
 def list_torrents():
     url = server_url + '/list_torrents'
     response = session.get(url)
@@ -673,6 +684,7 @@ def list_torrents():
             torrent_info = {k.decode(): v for k, v in torrent_info.items()}
             print("Info Hash:", info_hash)
             print("Name:", torrent_info['name'].decode())
+            
             if 'path' in torrent_info:
                 print("Files:")
                 file_size = 0
@@ -680,10 +692,12 @@ def list_torrents():
                     path = file[b'path'] if b'path' in file else file['path']
                     length = file[b'length'] if b'length' in file else file['length']
                     file_size += length
-                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({length} bytes)")
-                print("File Size:", file_size, "bytes")
+                    # Print file path and size in a readable format
+                    print("  -", os.path.join(*[p.decode('utf-8') for p in path]), f"({format_size(length)})")
+                print("Total File Size:", format_size(file_size))
             else:
-                print("File Size:", torrent_info['file_size'], "bytes")
+                print("File Size:", format_size(torrent_info['file_size']))
+            
             print("Uploaded by:", torrent_info['created_by'].decode())
             print("Date Uploaded:", time.ctime(torrent_info['date_uploaded']))
             print("Seeders:", torrent_info['seeder'])

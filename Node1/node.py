@@ -17,6 +17,7 @@ peer_id = hashlib.sha1(str(random.randint(0, sys.maxsize)).encode()).hexdigest()
 server_url = ''
 username = ''
 piece_length = 512 * 1024
+block_size = 16 * 1024
 torrents_dir = 'torrents'
 
 if not os.path.exists(torrents_dir):
@@ -413,7 +414,7 @@ class Connection:
         if piece_index < 0 or piece_index >= num_pieces:
             return False
 
-        if length <= 0 or length > 16384:
+        if length <= 0 or length > block_size:
             return False
 
         total_file_size = self.torrent.total_length
@@ -449,7 +450,7 @@ class Connection:
             print("No pieces left to request.")
             return
         piece_index = self.request_pieces[0]  # Get the next piece to request
-        length = min(16384, self.torrent.total_length - begin)
+        length = min(block_size, self.torrent.total_length - begin)
 
         # Construct the request message (ID = 6)
         payload = struct.pack("!III", piece_index, begin, length)
@@ -469,7 +470,11 @@ class Connection:
         if self.store_piece_block(piece_index, begin, block):
             self.request_pieces.pop(0)
         else:
-            self.start_request(sock, begin + len(block))
+            if begin + len(block) == self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else self.torrent.total_length % self.torrent.piece_length:
+                begin = 0
+                self.start_request(sock, begin)
+            else:
+                self.start_request(sock, begin + len(block))
 
     def store_piece_block(self, piece_index, begin, block):
         # Ensure that we have a structure to keep track of downloaded blocks
@@ -482,14 +487,14 @@ class Connection:
         # Check if we have all blocks for the piece
         is_piece_complete = self.is_piece_complete(piece_index)
         if is_piece_complete:
-            self.assemble_complete_piece(piece_index)
+            return self.assemble_complete_piece(piece_index)
+            
         return is_piece_complete
 
     def is_piece_complete(self, piece_index):
         # Check if all blocks of a particular piece are downloaded
         # Assuming fixed block size for simplicity, you may need to adjust this for different protocols
         total_size = self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else self.torrent.total_length % self.torrent.piece_length
-        block_size = 16384  # Default block size in bytes (16 KB)
 
         # Calculate expected number of blocks
         num_blocks = (total_size + block_size - 1) // block_size
@@ -502,15 +507,24 @@ class Connection:
         # Assemble all blocks into a complete piece
         blocks = self.downloaded_block[piece_index]
         complete_piece = b''.join(blocks[begin] for begin in sorted(blocks.keys()))
+        
+        hash = hashlib.sha1(complete_piece).digest()
+        if hash == self.torrent.piece_hashes[piece_index]:
+            print(f"Piece {piece_index} hash verified")
+            # Save the complete piece to disk or add it to the in-memory cache
+            self.save_complete_piece(piece_index, complete_piece)
 
-        # Save the complete piece to disk or add it to the in-memory cache
-        self.save_complete_piece(piece_index, complete_piece)
+            # Mark the piece as fully downloaded
+            print(f"Piece {piece_index} fully downloaded and saved")
 
-        # Mark the piece as fully downloaded
-        print(f"Piece {piece_index} fully downloaded and saved")
+            # Remove the blocks from the tracking data
+            del self.downloaded_block[piece_index]
 
-        # Remove the blocks from the tracking data
-        del self.downloaded_block[piece_index]
+            return True
+        
+        print(f"Piece {piece_index} hash verification failed")
+        return False
+
 
     def save_complete_piece(self, piece_index, complete_piece):
         # Example function to save a complete piece to disk

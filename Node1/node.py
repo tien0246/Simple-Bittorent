@@ -99,9 +99,12 @@ class Connection:
     
     def send_interested(self, sock, have_pieces):
         interested = False
+        self.request_pieces = []
         for i in range(self.num_pieces):
             if not self.pieces[i] and have_pieces[i]:
                 interested = True
+                print(i)
+                self.request_pieces.append(i)
                 break
         if interested:
             self.send_message(sock, 2)
@@ -114,9 +117,11 @@ class Connection:
         if msg_id == 0:
             pass
         elif msg_id == 1:
-            pass
+            print("Unchoke")
+            self.request_next_piece(sock)
         elif msg_id == 2:
             print("Interested")
+            self.send_message(sock, 1)
         elif msg_id == 3:
             print("Not interested")
             sock.close()
@@ -128,14 +133,17 @@ class Connection:
             self.send_interested(sock, have_pieces)
         elif msg_id == 6:
             print("Request")
+            self.handle_request(sock, payload)
         elif msg_id == 7:
             print("Piece")
+            self.request_next_piece(sock)
         elif msg_id == 8:
             print("Cancel")
         elif msg_id == 9:
             print("Port")
         else:
             print("Unknown message ID")
+
 
     def connect_to_peer(self, peer_ip, peer_port, peer_id):
         try:
@@ -151,7 +159,7 @@ class Connection:
                 print("Failed to receive a proper handshake response.")
                 sock.close()
                 return None
-            
+
             if response[:20] != handshake_message[:20]:
                 print("Invalid handshake received. Closing connection.")
                 sock.close()
@@ -159,7 +167,7 @@ class Connection:
 
             received_info_hash = response[28:48]
             received_peer_id = response[48:68]
-            
+
             if received_info_hash != self.info_hash:
                 print("Info hash mismatch. Closing connection.")
                 sock.close()
@@ -169,13 +177,41 @@ class Connection:
                 print("Connected wrong peer. Closing connection.")
                 sock.close()
                 return None
-            
-            print(f"Connected to peer {peer_ip}:{peer_port}")
 
+            print(f"Connected to peer {peer_ip}:{peer_port}")
             return sock
+
         except Exception as e:
             print(f"Failed to connect to peer {peer_ip}:{peer_port}: {e}")
             return None
+
+    def run(self, peer_list):
+        threads = []
+        for peer_ip, peer_port, peer_id in peer_list:
+            thread = threading.Thread(target=self.handle_peer_connection, args=(peer_ip, peer_port, peer_id))
+            thread.start()
+            threads.append(thread)
+
+        # Optional: Join all threads to ensure they complete
+        for thread in threads:
+            thread.join()
+    def handle_peer_connection(self, peer_ip, peer_port, peer_id):
+        try:
+            sock = self.connect_to_peer(peer_ip, peer_port, peer_id)
+            if not sock:
+                return
+
+            while True:
+                msg_id, payload = self.receive_message(sock)
+                if msg_id is None:
+                    break
+                self.process_message(sock, msg_id, payload)
+
+        except Exception as e:
+            print(f"Error handling peer connection: {e}")
+        finally:
+            if sock:
+                sock.close()
         
     def handle_client(self, client_sock, client_addr, info_hash, create_handshake_message):
         try:
@@ -240,17 +276,138 @@ class Connection:
         server_thread.start()
         print(f"Server started on port {port} in a separate thread.")
 
+
+    def handle_request(self, sock, payload):
+        # Parse the payload to extract index, begin, and length
+        piece_index, begin, length = struct.unpack("!III", payload)
+        print(f"Peer requested piece index: {piece_index}, begin: {begin}, length: {length}")
+
+        # Validate the request
+        if self.validate_request(piece_index, begin, length):
+            # Send the requested piece data
+            self.send_piece(sock, piece_index, begin, length)
+        else:
+            print("Invalid request. Ignoring.")
+
+    def validate_request(self, piece_index, begin, length):
+        # Example validation logic:
+        # Ensure piece_index is valid and we have the requested piece
+        if piece_index < 0 or piece_index >= len(self.pieces):
+            return False
+
+        # Ensure the requested data length is reasonable
+        max_length = 16384  # Common max length (16KB)
+        if length <= 0 or length > max_length:
+            return False
+
+        # Check if we actually have this piece
+        return self.pieces[piece_index]
+
+    def send_piece(self, sock, piece_index, begin, length):
+        # Fetch the data to be sent
+        piece_data = self.get_piece_data(piece_index, begin, length)
+
+        # Construct the piece message (ID = 7)
+        payload = struct.pack("!II", piece_index, begin) + piece_data
+        self.send_message(sock, 7, payload)
+
+        print(f"Sent piece index: {piece_index}, begin: {begin}, length: {len(piece_data)}")
+
+    def get_piece_data(self, piece_index, begin, length):
+        # Example function to read piece data from disk or memory
+        # Implement this to suit your storage mechanism
+        piece_data = b'\x00' * length
+        return piece_data
+    
+    def request_next_piece(self, sock):
+        """
+        Request the next piece from the list of pieces we need.
+        """
+        if not self.request_pieces:
+            print("No pieces left to request.")
+            return
+        piece_index = self.request_pieces.pop(0)  # Get the next piece to request
+        begin = 0  # Usually, you start from offset 0
+        length = min(16384, self.num_pieces - begin)  # Request up to 16KB at a time
+
+        # Construct the request message (ID = 6)
+        payload = struct.pack("!III", piece_index, begin, length)
+        self.send_message(sock, 6, payload)
+        print(f"Requested piece {piece_index} from peer.")
+
+    def handle_piece(self, payload):
+        # The Piece message has the following structure:
+        # <index (4 bytes)> <begin (4 bytes)> <block (N bytes)>
+        piece_index = struct.unpack("!I", payload[:4])[0]
+        begin = struct.unpack("!I", payload[4:8])[0]
+        block = payload[8:]
+
+        print(f"Received piece for index {piece_index}, begin {begin}, length {len(block)} bytes")
+
+        # Store the block in the appropriate location
+        self.store_piece_block(piece_index, begin, block)
+
+    def store_piece_block(self, piece_index, begin, block):
+        # Ensure that we have a structure to keep track of downloaded blocks
+        if piece_index not in self.downloaded_pieces:
+            self.downloaded_pieces[piece_index] = {}
+
+        # Store the block using the `begin` offset as the key
+        self.downloaded_pieces[piece_index][begin] = block
+
+        # Check if we have all blocks for the piece
+        if self.is_piece_complete(piece_index):
+            self.assemble_complete_piece(piece_index)
+
+    def is_piece_complete(self, piece_index):
+        # Check if all blocks of a particular piece are downloaded
+        # Assuming fixed block size for simplicity, you may need to adjust this for different protocols
+        total_size = self.piece_length[piece_index]
+        block_size = 16384  # Default block size in bytes (16 KB)
+
+        # Calculate expected number of blocks
+        num_blocks = (total_size + block_size - 1) // block_size
+
+        # Ensure we have received all blocks
+        return len(self.downloaded_pieces[piece_index]) == num_blocks
+
+    def assemble_complete_piece(self, piece_index):
+        # Assemble all blocks into a complete piece
+        blocks = self.downloaded_pieces[piece_index]
+        complete_piece = b''.join(blocks[begin] for begin in sorted(blocks.keys()))
+
+        # Save the complete piece to disk or add it to the in-memory cache
+        self.save_complete_piece(piece_index, complete_piece)
+
+        # Mark the piece as fully downloaded
+        print(f"Piece {piece_index} fully downloaded and saved")
+
+        # Remove the blocks from the tracking data
+        del self.downloaded_pieces[piece_index]
+
+    def save_complete_piece(self, piece_index, complete_piece):
+        # Example function to save a complete piece to disk
+        # Implement this to suit your storage mechanism
+        file_name = f"piece_{piece_index}.dat"
+        with open(file_name, "wb") as file:
+            file.write(complete_piece)
+        print(f"Piece {piece_index} saved to {file_name}")
     def run(self):
-        peer_ip = '0.0.0.0'
+        peer_ip = '127.0.0.1'
         peer_port = 9001
         peer_id = bytes.fromhex(input("Enter peer ID: "))
-        s = self.connect_to_peer(peer_ip, peer_port, peer_id)
-        if s:
-            while True:
-                msg_id, payload = self.receive_message(s)
-                if msg_id is None:
-                    break
-                self.process_message(s, msg_id, payload)
+        self.handle_peer_connection(peer_ip, peer_port, peer_id)
+    # def run(self):
+    #     peer_ip = '127.0.0.1'
+    #     peer_port = 9001
+    #     peer_id = bytes.fromhex(input("Enter peer ID: "))
+    #     s = self.connect_to_peer(peer_ip, peer_port, peer_id)
+    #     if s:
+    #         while True:
+    #             msg_id, payload = self.receive_message(s)
+    #             if msg_id is None:
+    #                 break
+    #             self.process_message(s, msg_id, payload)
 
 def create_torrent(path, tracker_url, output_file=None):
     if not os.path.exists(path):

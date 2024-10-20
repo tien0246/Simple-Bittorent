@@ -23,7 +23,7 @@ if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
 
 class Torrent:
-    def __init__(self, torrent_path):
+    def __init__(self, torrent_path, pieces = None):
         self.torrent_path = torrent_path
         torrent_data = parse_torrent_file(torrent_path)
         self.info = torrent_data['info']
@@ -33,7 +33,7 @@ class Torrent:
         self.num_pieces = torrent_data['num_pieces']
         self.total_length = torrent_data['total_length']
         self.name = torrent_data['name']
-        self.pieces_have = [False] * self.num_pieces
+        self.pieces_have = [False] * self.num_pieces if pieces is None else pieces
         self.piece_hashes = [self.pieces[i*20:(i+1)*20] for i in range(self.num_pieces)]
     
 def create_torrent(path, tracker_url, output_file=None):
@@ -149,6 +149,7 @@ class Connection:
         self.client_peer_id = client_peer_id
         self.lock = threading.Lock()
         self.request_pieces = []
+        self.downloaded_block = [{} for _ in range(torrent.num_pieces)]
 
     def send_message(self, sock, msg_id, payload=b''):
         length = 1 + len(payload)
@@ -220,7 +221,7 @@ class Connection:
     def send_interested(self, sock, have_pieces):
         interested = False
         for i in range(self.torrent.num_pieces):
-            if not self.torrent.pieces[i] and have_pieces[i]:
+            if not self.torrent.pieces_have[i] and have_pieces[i]:
                 interested = True
                 print(i)
                 self.request_pieces.append(i)
@@ -237,7 +238,7 @@ class Connection:
             pass
         elif msg_id == 1:
             print("Unchoke")
-            self.request_next_piece(sock)
+            self.start_request(sock)
         elif msg_id == 2:
             print("Interested")
             self.send_message(sock, 1)
@@ -255,7 +256,7 @@ class Connection:
             self.handle_request(sock, payload)
         elif msg_id == 7:
             print("Piece")
-            self.request_next_piece(sock)
+            self.handle_piece(sock, payload)
         elif msg_id == 8:
             print("Cancel")
         elif msg_id == 9:
@@ -323,6 +324,7 @@ class Connection:
 
             while True:
                 msg_id, payload = self.receive_message(sock)
+                print(f"Received message ID {msg_id}")
                 if msg_id is None:
                     break
                 self.process_message(sock, msg_id, payload)
@@ -398,30 +400,33 @@ class Connection:
 
 
     def handle_request(self, sock, payload):
-        # Parse the payload to extract index, begin, and length
         piece_index, begin, length = struct.unpack("!III", payload)
         print(f"Peer requested piece index: {piece_index}, begin: {begin}, length: {length}")
 
-        # Validate the request
         if self.validate_request(piece_index, begin, length):
-            # Send the requested piece data
             self.send_piece(sock, piece_index, begin, length)
         else:
             print("Invalid request. Ignoring.")
 
-    def validate_request(self, piece_index, length):
-        # Example validation logic:
-        # Ensure piece_index is valid and we have the requested piece
-        if piece_index < 0 or piece_index >= len(self.torrent.pieces):
+    def validate_request(self, piece_index, begin, length):
+        num_pieces = len(self.torrent.pieces)
+        if piece_index < 0 or piece_index >= num_pieces:
             return False
 
-        # Ensure the requested data length is reasonable
-        max_length = 16384  # Common max length (16KB)
-        if length <= 0 or length > max_length:
+        if length <= 0 or length > 16384:
             return False
 
-        # Check if we actually have this piece
-        return self.torrent.pieces[piece_index]
+        total_file_size = self.torrent.total_length
+        piece_length = self.torrent.piece_length
+
+        piece_size = (total_file_size % piece_length) if piece_index == num_pieces - 1 else piece_length
+        if piece_size == 0:
+            piece_size = piece_length
+
+        if begin < 0 or begin >= piece_size or begin + length > piece_size:
+            return False
+
+        return self.torrent.pieces_have[piece_index]
 
     def send_piece(self, sock, piece_index, begin, length):
         # Fetch the data to be sent
@@ -436,26 +441,22 @@ class Connection:
     def get_piece_data(self, piece_index, begin, length):
         # Example function to read piece data from disk or memory
         # Implement this to suit your storage mechanism
-        piece_data = b'\x00' * length
+        piece_data = b'\x41' * length
         return piece_data
     
-    def request_next_piece(self, sock):
-        """
-        Request the next piece from the list of pieces we need.
-        """
+    def start_request(self, sock, begin = 0):
         if not self.request_pieces:
             print("No pieces left to request.")
             return
-        piece_index = self.request_pieces.pop(0)  # Get the next piece to request
-        begin = 0  # Usually, you start from offset 0
-        length = min(16384, self.num_pieces - begin)  # Request up to 16KB at a time
+        piece_index = self.request_pieces[0]  # Get the next piece to request
+        length = min(16384, self.torrent.total_length - begin)
 
         # Construct the request message (ID = 6)
         payload = struct.pack("!III", piece_index, begin, length)
         self.send_message(sock, 6, payload)
         print(f"Requested piece {piece_index} from peer.")
 
-    def handle_piece(self, payload):
+    def handle_piece(self, sock, payload):
         # The Piece message has the following structure:
         # <index (4 bytes)> <begin (4 bytes)> <block (N bytes)>
         piece_index = struct.unpack("!I", payload[:4])[0]
@@ -465,35 +466,41 @@ class Connection:
         print(f"Received piece for index {piece_index}, begin {begin}, length {len(block)} bytes")
 
         # Store the block in the appropriate location
-        self.store_piece_block(piece_index, begin, block)
+        if self.store_piece_block(piece_index, begin, block):
+            self.request_pieces.pop(0)
+        else:
+            self.start_request(sock, begin + len(block))
 
     def store_piece_block(self, piece_index, begin, block):
         # Ensure that we have a structure to keep track of downloaded blocks
-        if piece_index not in self.downloaded_pieces:
-            self.downloaded_pieces[piece_index] = {}
+        # if piece_index not in self.downloaded_block:
+        #     self.downloaded_block[piece_index] = {}
 
         # Store the block using the `begin` offset as the key
-        self.downloaded_pieces[piece_index][begin] = block
+        self.downloaded_block[piece_index][begin] = block
 
         # Check if we have all blocks for the piece
-        if self.is_piece_complete(piece_index):
+        is_piece_complete = self.is_piece_complete(piece_index)
+        if is_piece_complete:
             self.assemble_complete_piece(piece_index)
+        return is_piece_complete
 
     def is_piece_complete(self, piece_index):
         # Check if all blocks of a particular piece are downloaded
         # Assuming fixed block size for simplicity, you may need to adjust this for different protocols
-        total_size = self.piece_length[piece_index]
+        total_size = self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else self.torrent.total_length % self.torrent.piece_length
         block_size = 16384  # Default block size in bytes (16 KB)
 
         # Calculate expected number of blocks
         num_blocks = (total_size + block_size - 1) // block_size
+        print(f"Piece {piece_index} has {len(self.downloaded_block[piece_index])} blocks out of {num_blocks}")
 
         # Ensure we have received all blocks
-        return len(self.downloaded_pieces[piece_index]) == num_blocks
+        return len(self.downloaded_block[piece_index]) == num_blocks
 
     def assemble_complete_piece(self, piece_index):
         # Assemble all blocks into a complete piece
-        blocks = self.downloaded_pieces[piece_index]
+        blocks = self.downloaded_block[piece_index]
         complete_piece = b''.join(blocks[begin] for begin in sorted(blocks.keys()))
 
         # Save the complete piece to disk or add it to the in-memory cache
@@ -503,7 +510,7 @@ class Connection:
         print(f"Piece {piece_index} fully downloaded and saved")
 
         # Remove the blocks from the tracking data
-        del self.downloaded_pieces[piece_index]
+        del self.downloaded_block[piece_index]
 
     def save_complete_piece(self, piece_index, complete_piece):
         # Example function to save a complete piece to disk
@@ -714,11 +721,11 @@ if __name__ == '__main__':
                 info_hash = input("Enter info hash: ")
                 download_torrent(info_hash)
             elif choice == '8':
-                print(announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "started", 9001, 0, 0, 0))
+                print(announce("54c9b37ce375bd009e5b768b260cf07b224a8456", "started", 9001, 0, 0, 0))
             elif choice == '9':
                 # peer_ip = input("Enter peer IP: ")
                 # peer_port = int(input("Enter peer port: "))
-                torrent = Torrent('torrents/95acaa0905b98ea184ea9bd2d7c2c916421cbd4c.torrent')
+                torrent = Torrent('torrents/54c9b37ce375bd009e5b768b260cf07b224a8456.torrent')
                 connect = Connection(torrent, bytes.fromhex(peer_id))
                 connect.run()
             elif choice == '10':
@@ -728,10 +735,12 @@ if __name__ == '__main__':
                 print("Peer ID:", peer_id)
                 # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
                 peerid = bytes.fromhex(peer_id)
-                connect = Connection(Torrent('torrents/95acaa0905b98ea184ea9bd2d7c2c916421cbd4c.torrent'), peerid)
+                torrent = Torrent('torrents/54c9b37ce375bd009e5b768b260cf07b224a8456.torrent')
+                torrent.pieces_have = [True] * torrent.num_pieces
+                connect = Connection(torrent, peerid)
                 # connect.listen_for_handshake(port)
                 connect.start_server_in_thread(port)
             else:
                 print("Invalid choice")
     except KeyboardInterrupt:
-        announce("95acaa0905b98ea184ea9bd2d7c2c916421cbd4c", "stopped", 9001, 0, 0, 100)
+        announce("54c9b37ce375bd009e5b768b260cf07b224a8456", "stopped", 9001, 0, 0, 100)

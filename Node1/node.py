@@ -169,7 +169,7 @@ class Connection:
         self.client_peer_id = self.client_peer_id = bytes.fromhex(client_peer_id) if isinstance(client_peer_id, str) else client_peer_id
         self.lock = threading.Lock()
         self.request_pieces = []
-        self.downloaded_block = [{}] * torrent.num_pieces
+        self.downloaded_block = [{} for _ in range(torrent.num_pieces)]
         self.retry_pieces = [0] * torrent.num_pieces
         self.max_retries = 3
         self.peers = []
@@ -342,20 +342,23 @@ class Connection:
 
     def run(self, peers):
         self.peers = peers
-        with ThreadPoolExecutor(max_workers = 5) as executor:
-            # while not all(self.torrent.pieces_have):
-                # Lọc bỏ peer là chính mình
-            peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id and peer['port'] != peer_port]
-            if not peers:
-                print("Không có peers nào để kết nối. Đang chờ...")
-                time.sleep(5)
-                # continue
+        peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id and peer['port'] != peer_port]
+        if not peers:
+            print("Không có peers nào để kết nối. Đang chờ...")
+            time.sleep(5)
+            return
+        
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            futures = []
             for peer in peers:
                 if all(self.torrent.pieces_have):
                     break
                 print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
-                executor.submit(self.handle_peer_connection, peer)
-            executor.shutdown(wait=True)
+                futures.append(executor.submit(self.handle_peer_connection, peer))
+            
+            for future in futures:
+                future.result()
+
 
     def handle_peer_connection(self, peer):
         try:
@@ -437,8 +440,7 @@ class Connection:
             server_sock.close()
 
     def start_server_in_thread(self, port):
-        server_thread = threading.Thread(target=self.listen_for_handshake, args=(port,))
-        server_thread.daemon = True
+        server_thread = threading.Thread(target=self.listen_for_handshake, args=(port,), daemon=True)
         server_thread.start()
         print(f"Server started on port {port} in a separate thread.")
 
@@ -487,7 +489,6 @@ class Connection:
         remaining_length = length
         data = b''
         current_offset = 0
-        print(length)
 
         if not self.torrent.paths:
             # Single file
@@ -561,18 +562,17 @@ class Connection:
                 current_offset += file_length
 
     
-    def start_request(self, sock, begin = 0):
-        time.sleep(10)
-        if not self.request_pieces:
+    def start_request(self, sock, piece_index = 0, begin = 0):
+        time.sleep(0.5)
+        if not self.request_pieces and begin == 0:
             print("No pieces left to request.")
             return
-        piece_index = self.request_pieces[0]
+        if begin == 0:
+            with self.lock:
+                piece_index = self.request_pieces[0]
+                self.request_pieces.pop(0)
+
         length = min(block_size, self.torrent.total_length - piece_index * self.torrent.piece_length - begin)
-
-        # piece_size = min(self.torrent.paths[piece_index]['length'], self.torrent.total_length - piece_index * self.torrent.piece_length)
-        # remaining = piece_size - begin
-        # length = min(block_size, remaining)
-
 
         # Construct the request message (ID = 6)
         payload = struct.pack("!III", piece_index, begin, length)
@@ -588,7 +588,6 @@ class Connection:
         try:
             # Store the block in the appropriate location
             if self.store_piece_block(piece_index, begin, block):
-                self.request_pieces.pop(0)
                 self.start_request(sock)
             else:
                 if piece_index < self.torrent.num_pieces - 1:
@@ -598,16 +597,15 @@ class Connection:
                     if piece_length == 0:
                         piece_length = self.torrent.piece_length
                 if begin + len(block) == piece_length:
-                    begin = 0
                     if self.retry_pieces[piece_index] < self.max_retries:
                         self.retry_pieces[piece_index] += 1
-                        self.start_request(sock, begin)
+                        self.start_request(sock, piece_index)
                     else:
                         print(f"\nĐã đạt số lần retry tối đa cho piece {piece_index}. Tải ở peer khác.")
                         self.send_message(sock, 3)
                         sock.close()
                 else:
-                    self.start_request(sock, begin + len(block))
+                    self.start_request(sock, piece_index, begin + len(block))
         except Exception as e:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
@@ -619,7 +617,9 @@ class Connection:
         # if piece_index not in self.downloaded_block:
         #     self.downloaded_block[piece_index] = {}
         # Store the block using the `begin` offset as the key
-        self.downloaded_block[piece_index][begin] = block
+        with self.lock:
+            self.downloaded_block[piece_index][begin] = block
+
         # Check if we have all blocks for the piece
         is_piece_complete = self.is_piece_complete(piece_index)
         if is_piece_complete:
@@ -657,7 +657,7 @@ class Connection:
             self.downloaded_block[piece_index].clear()
             self.torrent.pieces_have[piece_index] = True
             return True
-        
+            
         print(f"Piece {piece_index} hash verification failed")
         return False
 
@@ -871,7 +871,7 @@ def start_as_leecher(torrent, peer_id, pieces = None):
     print(f"\nLeecher '{peer_id}' bắt đầu tải xuống tệp '{conn.torrent.name}'.")
     conn.run(peer_list)
     # Thông báo 'stopped' tới Tracker khi hoàn tất tải xuống
-    announce(conn.torrent.info_hash, event = 'stop', port = peer_port)
+    announce(conn.torrent.info_hash, event = 'stopped', port = peer_port)
 
     if all(conn.torrent.pieces_have):
         print(f"\nFile '{conn.torrent.name}' đã được lưu thành công.")
@@ -918,9 +918,9 @@ if __name__ == '__main__':
                 info_hash = input("Enter info hash: ")
                 download_torrent(info_hash)
             elif choice == '8':
-                print(announce("26c711b68a5ffa0cae91f94734e9926b4cc71d9d", "started", 9001, 0, 0, 0))
+                print(announce("fea718d41068b1d3773646cbc8f5ccd091f9d026", "started", 9001, 0, 0, 0))
             elif choice == '9':
-                torrent = Torrent('torrents/26c711b68a5ffa0cae91f94734e9926b4cc71d9d.torrent')
+                torrent = Torrent('torrents/fea718d41068b1d3773646cbc8f5ccd091f9d026.torrent')
                 torrent.pieces_have = [False] * torrent.num_pieces
                 start_as_leecher(torrent, peer_id)
             elif choice == '10':
@@ -929,11 +929,11 @@ if __name__ == '__main__':
                 print("Peer ID:", peer_id)
                 # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
                 peerid = bytes.fromhex(peer_id)
-                torrent = Torrent('torrents/26c711b68a5ffa0cae91f94734e9926b4cc71d9d.torrent')
+                torrent = Torrent('torrents/fea718d41068b1d3773646cbc8f5ccd091f9d026.torrent')
                 print(torrent.paths)
                 torrent.pieces_have = [True] * torrent.num_pieces
                 start_as_seeder(torrent, peerid)
             else:
                 print("Invalid choice")
     except KeyboardInterrupt:
-        announce("26c711b68a5ffa0cae91f94734e9926b4cc71d9d", "stopped", 9001, 0, 0, 100)
+        announce("fea718d41068b1d3773646cbc8f5ccd091f9d026", "stopped", 9001, 0, 0, 100)

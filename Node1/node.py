@@ -290,20 +290,16 @@ class Connection:
             print("Unknown message ID")
 
     def update_request_pieces(self, peer_id, peer_bitfield):
-        # Cập nhật peer_to_pieces và piece_to_peers
         pieces_have = {i for i, has_piece in enumerate(peer_bitfield) if has_piece}
         
         with self.lock:
-            # Cập nhật thông tin piece_to_peers cho các phần mà peer này có
             for i in pieces_have:
                 if i not in self.piece_to_peers:
                     self.piece_to_peers[i] = set()
                 self.piece_to_peers[i].add(peer_id)
 
-            # Cập nhật danh sách các phần peer này có
             self.peer_to_pieces[peer_id] = pieces_have
 
-            # Đếm số peer có mỗi phần
             piece_count = {i: 0 for i in range(self.torrent.num_pieces)}
             for peer in self.peers:
                 if 'bitfield' not in peer:
@@ -312,16 +308,9 @@ class Connection:
                     if has_piece and not self.torrent.pieces_have[index]:
                         piece_count[index] += 1
 
-            # Sắp xếp các phần theo độ hiếm (rarest first)
             self.request_pieces = sorted(piece_count, key=lambda x: piece_count[x])
 
         print(f"Request pieces đã sắp xếp theo độ hiếm: {self.request_pieces}")
-
-
-
-
-
-
 
     def connect_to_peer(self, peer_ip, peer_port, peer_id):
         try:
@@ -586,6 +575,15 @@ class Connection:
 
                 current_offset += file_length
 
+    def ip_and_port_to_peer_id(self, ip, port):
+        peer_ip = ip
+        peer_port = port
+        peer_id = None
+        for p in self.peers:
+            if p['ip'] == peer_ip and p['port'] == peer_port:
+                peer_id = p['peerid']
+                break
+        return peer_id
     
     def start_request(self, sock, piece_index = 0, begin = 0):
         if DEBUG: time.sleep(0.5)
@@ -593,14 +591,8 @@ class Connection:
             print("No pieces left to request.")
             return
         if begin == 0:
-            peer_address = sock.getpeername()
-            peer_ip = peer_address[0]
-            peer_port = peer_address[1]
-            peer_id = None
-            for p in self.peers:
-                if p['ip'] == peer_ip and p['port'] == peer_port:
-                    peer_id = p['peerid']
-                    break
+            peer_ip, peer_port = sock.getpeername()
+            peer_id = self.ip_and_port_to_peer_id(peer_ip, peer_port)
             with self.lock:
                 piece_index = self.request_pieces[0]
                 if piece_index not in self.peer_to_pieces.get(peer_id, set()):

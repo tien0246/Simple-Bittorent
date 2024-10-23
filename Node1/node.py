@@ -75,6 +75,7 @@ def create_torrent(path, tracker_url, output_file=None):
         # Multiple files
         files = []
         total_size = 0
+        buffer = b''
 
         for root, _, filenames in os.walk(path):
             for filename in filenames:
@@ -87,12 +88,17 @@ def create_torrent(path, tracker_url, output_file=None):
 
                 with open(file_path, 'rb') as f:
                     while True:
-                        piece = f.read(piece_length)
-                        if not piece:
+                        chunk = f.read(piece_length - len(buffer))
+                        if not chunk:
                             break
-                        if len(piece) < piece_length and f != filenames[-1]:
-                            piece += f.read(piece_length - len(piece))
-                        pieces.append(hashlib.sha1(piece).digest())
+                        buffer += chunk
+                        if len(buffer) >= piece_length:
+                            piece_data = buffer[:piece_length]
+                            pieces.append(hashlib.sha1(piece_data).digest())
+                            buffer = buffer[piece_length:]
+
+        if buffer:
+            pieces.append(hashlib.sha1(buffer).digest())
 
         pieces_concatenated = b''.join(pieces)
 
@@ -102,6 +108,7 @@ def create_torrent(path, tracker_url, output_file=None):
             'piece length': piece_length,
             'pieces': pieces_concatenated
         }
+
 
     torrent = {
         'announce': tracker_url,
@@ -555,11 +562,17 @@ class Connection:
 
     
     def start_request(self, sock, begin = 0):
+        time.sleep(10)
         if not self.request_pieces:
             print("No pieces left to request.")
             return
         piece_index = self.request_pieces[0]
         length = min(block_size, self.torrent.total_length - piece_index * self.torrent.piece_length - begin)
+
+        # piece_size = min(self.torrent.paths[piece_index]['length'], self.torrent.total_length - piece_index * self.torrent.piece_length)
+        # remaining = piece_size - begin
+        # length = min(block_size, remaining)
+
 
         # Construct the request message (ID = 6)
         payload = struct.pack("!III", piece_index, begin, length)
@@ -617,7 +630,7 @@ class Connection:
     def is_piece_complete(self, piece_index):
         # Check if all blocks of a particular piece are downloaded
         # Assuming fixed block size for simplicity, you may need to adjust this for different protocols
-        total_size = self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else self.torrent.total_length % self.torrent.piece_length
+        total_size = self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else (self.torrent.total_length % self.torrent.piece_length or self.torrent.piece_length)
 
         # Calculate expected number of blocks
         num_blocks = (total_size + block_size - 1) // block_size
@@ -905,9 +918,9 @@ if __name__ == '__main__':
                 info_hash = input("Enter info hash: ")
                 download_torrent(info_hash)
             elif choice == '8':
-                print(announce("f34efb4205af2405801705f01b96c74dddbb596e", "started", 9001, 0, 0, 0))
+                print(announce("26c711b68a5ffa0cae91f94734e9926b4cc71d9d", "started", 9001, 0, 0, 0))
             elif choice == '9':
-                torrent = Torrent('torrents/f34efb4205af2405801705f01b96c74dddbb596e.torrent')
+                torrent = Torrent('torrents/26c711b68a5ffa0cae91f94734e9926b4cc71d9d.torrent')
                 torrent.pieces_have = [False] * torrent.num_pieces
                 start_as_leecher(torrent, peer_id)
             elif choice == '10':
@@ -916,11 +929,11 @@ if __name__ == '__main__':
                 print("Peer ID:", peer_id)
                 # info_hash = bytes.fromhex(input("Enter info hash (hex): "))
                 peerid = bytes.fromhex(peer_id)
-                torrent = Torrent('torrents/f34efb4205af2405801705f01b96c74dddbb596e.torrent')
+                torrent = Torrent('torrents/26c711b68a5ffa0cae91f94734e9926b4cc71d9d.torrent')
                 print(torrent.paths)
                 torrent.pieces_have = [True] * torrent.num_pieces
                 start_as_seeder(torrent, peerid)
             else:
                 print("Invalid choice")
     except KeyboardInterrupt:
-        announce("f34efb4205af2405801705f01b96c74dddbb596e", "stopped", 9001, 0, 0, 100)
+        announce("26c711b68a5ffa0cae91f94734e9926b4cc71d9d", "stopped", 9001, 0, 0, 100)

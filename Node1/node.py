@@ -434,6 +434,13 @@ class Connection:
                         continue
                     piece_index = random.choice(list(available_pieces))
                     self.start_request(sock, piece_index)
+                if msg_id == 1:
+                    available_pieces = self.piece_peer_map.get_by_value(peer['peerid']).intersection(self.request_pieces)
+                    if not available_pieces:
+                        print(f"Peer {peer['ip']} không còn piece nào để tải.")
+                        continue
+                    piece_index = random.choice(list(available_pieces))
+                    self.start_request(sock, piece_index)
                 self.process_message(sock, msg_id, payload)
                 
         except Exception as e:
@@ -679,6 +686,7 @@ class Connection:
             exc_type, exc_obj, exc_tb = sys.exc_info()
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
             print(exc_type, fname, exc_tb.tb_lineno)
+            print(e)
             return None
 
     def store_piece_block(self, piece_index, begin, block):

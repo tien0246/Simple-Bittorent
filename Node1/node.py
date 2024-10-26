@@ -345,23 +345,70 @@ class Connection:
         print(f"Request pieces đã sắp xếp theo độ hiếm: {self.request_pieces}")
 
     def run(self, peers):
-        # self.peers = peers
         if not peers:
             print('No peer found.')
             return
         peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id and peer['port'] != peer_port]
+        self.peers = peers
         if not peers:
             print("Không có peers nào để kết nối. Đang chờ...")
             time.sleep(5)
             return
-        
-        with ThreadPoolExecutor(max_workers=5) as executor:
-            futures = []
-            for peer in peers:
-                print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
-                futures.append(executor.submit(self.handle_peer_connection, peer))
-            for future in futures:
-                future.result()
+
+        max_workers = 5
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while not all(self.torrent.pieces_have):
+                futures = {}
+                num_peers = len(self.peers)
+                
+                if num_peers == 0:
+                    print("No peers available, waiting for more peers...")
+                    time.sleep(5)
+                    continue
+                
+                # Calculate even distribution across peers
+                base_connections = max_workers // num_peers
+                extra_connections = max_workers % num_peers
+                
+                # First, ensure each peer gets at least `base_connections` threads
+                for peer in reversed(self.peers):
+                    for _ in range(base_connections):
+                        print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
+                        future = executor.submit(self.handle_peer_connection, peer)
+                        futures[future] = peer
+
+                # Distribute the extra connections to make use of all available threads
+                if extra_connections > 0:
+                    for i in range(extra_connections):
+                        peer = peers[i % num_peers]
+                        print(f"Connecting to peer {peer['ip']}:{peer['port']} (extra connection)...")
+                        future = executor.submit(self.handle_peer_connection, peer)
+                        futures[future] = peer
+
+                peers_to_remove = []
+                for future in futures:
+                    peer = futures[future]
+                    try:
+                        result = future.result()  # This will return the output of handle_peer_connection
+                        if result is None:
+                            print(f"Connection attempt to {peer['ip']}:{peer['port']} finished with no result.")
+                        elif result is True:
+                            print(f"Successfully connected to peer {peer['ip']}:{peer['port']}.")
+                        elif result is False:
+                            print(f"Failed to connect to peer {peer['ip']}:{peer['port']}. Removing from list.")
+                            peers_to_remove.append(peer)
+                        else:
+                            print(f"Received unexpected result from peer {peer['ip']}:{peer['port']}: {result}")
+                    except Exception as e:
+                        print(f"An error occurred while connecting to peer {peer['ip']}:{peer['port']}: {e}")
+                        peers_to_remove.append(peer)
+
+                # Remove failed peers after processing all futures
+                for peer in peers_to_remove:
+                    if peer in self.peers:
+                        self.peers.remove(peer)
+
+
 
     def handle_peer_connection(self, peer):
         try:
@@ -370,10 +417,11 @@ class Connection:
             progress = 0
             banned_index = []
             if all(self.torrent.pieces_have):
-                return
+                return True
             sock = self.connect_to_peer(peer)
             if not sock:
-                return
+                #self.peers.remove(peer)2
+                return False
         except:
             print(f"Error handling peer connection: {e}")
         try:
@@ -382,19 +430,6 @@ class Connection:
                 print(f"Received message ID {msg_id}")
                 if msg_id is None:
                     break
-                if msg_id == 5:
-                    peer['bitfield'] = self.parse_bitfield(payload, self.torrent.num_pieces)
-                    self.update_request_pieces(peer['peerid'], peer['bitfield'])
-                    have_pieces = self.parse_bitfield(payload, self.torrent.num_pieces)
-                    self.send_interested(sock, have_pieces)
-                if msg_id == 1:
-                    available_pieces = self.piece_peer_map.get_by_value(peer['peerid']).intersection(self.request_pieces)
-                    if not available_pieces:
-                        print(f"Peer {peer['ip']} không còn piece nào để tải.")
-                        continue
-                    current_piece_index = random.choice(list(available_pieces))
-                    self.request_pieces.remove(current_piece_index)
-                    self.start_request(sock, current_piece_index)
                 if msg_id == 7:
                     finished, verified =  self.handle_piece(sock, payload)   
                     if finished == False:
@@ -414,25 +449,49 @@ class Connection:
                         progress = 0
                         continue
                     if finished is None or (finished and not verified):
-                        self.request_pieces.insert(0, current_piece_index)
-                        self.retry_pieces[peer['peerid']][current_piece_index] += 1
-                        if self.retry_pieces[peer['peerid']][current_piece_index] > self.max_retries:
-                            banned_index.append(current_piece_index)
-                            print(f"\nĐã đạt số lần retry tối đa cho piece {current_piece_index}. Bỏ qua piece này.")
-                        else:
-                            print(f"\nRetrying piece {current_piece_index}. Lần thứ {self.retry_counts[peer['peerid']][current_piece_index]}")
-                        current_piece_index = [val for val in self.request_pieces if val not in banned_index][0]
-                        self.start_request(sock, current_piece_index)
                         progress = 0
-                
+                        if self.retry_pieces(current_piece_index, peer):
+                            self.start_request(sock, current_piece_index)
+                        else:
+                            banned_index.append(current_piece_index)
+                            current_piece_index = [val for val in self.request_pieces if val not in banned_index][0]
+                            self.request_pieces.remove(current_piece_index)
+                            self.start_request(sock, current_piece_index)
+                if msg_id == 5:
+                    peer['bitfield'] = self.parse_bitfield(payload, self.torrent.num_pieces)
+                    self.update_request_pieces(peer['peerid'], peer['bitfield'])
+                    have_pieces = self.parse_bitfield(payload, self.torrent.num_pieces)
+                    self.send_interested(sock, have_pieces)
+                if msg_id == 1:
+                    available_pieces = self.piece_peer_map.get_by_value(peer['peerid']).intersection(self.request_pieces)
+                    if not available_pieces:
+                        print(f"Peer {peer['ip']} không còn piece nào để tải.")
+                        continue
+                    current_piece_index = random.choice(list(available_pieces))
+                    self.request_pieces.remove(current_piece_index)
+                    self.start_request(sock, current_piece_index)
+            return True
         except Exception as e:
             print(f"Error handling peer connection: {e}")
             print('Mất kết nối tới Peer...')
+            return None
         finally:
             if not all(self.torrent.pieces_have) and current_piece_index != None:
                 self.request_pieces.insert(0, current_piece_index)
             if sock:
                 sock.close()
+
+    def retry_pieces(self, piece_index, peerid):
+        self.retry_pieces[peerid][piece_index] += 1
+        if self.retry_pieces[peerid][piece_index] > self.max_retries:
+            print(f"\nĐã đạt số lần retry tối đa cho piece {piece_index}. Bỏ qua piece này.")
+            self.request_pieces.insert(0, piece_index)
+            return False
+        else:
+            print(f"\nRetrying piece {piece_index}. Lần thứ {self.retry_counts[peerid][piece_index]}")
+            return True
+            
+            
                 
     def connect_to_peer(self, peer):
         try:
@@ -446,7 +505,6 @@ class Connection:
             response = sock.recv(68)
             peer['sock'] = sock
             self.retry_pieces[peer['peerid']] = [0] * self.torrent.num_pieces
-            self.peers.append(peer)
 
             if len(response) != 68:
                 print("Failed to receive a proper handshake response.")
@@ -788,6 +846,9 @@ class Connection:
                 break
         return peer_id
 
+    def verify_hash():
+        pass
+
 def upload_torrent(torrent_path):
     url = f"{server_url}/upload_torrent"
     file = {'torrent': open(torrent_path, 'rb')}
@@ -944,6 +1005,9 @@ def list_torrents():
             print("-" * 20)
     else:
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+
+def magnetText():
+    pass
 
 def start_as_seeder(torrent, peer_id, pieces = None):
     """Khởi động chế độ Seeder"""

@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import threading
+from threading import Thread
 import socket
 import requests
 import hashlib
@@ -340,7 +341,7 @@ class Connection:
                     if has_piece and not self.torrent.pieces_have[index]:
                         piece_count[index] += 1
 
-            self.request_pieces = sorted(piece_count, key=lambda x: piece_count[x])
+            self.request_pieces = sorted(piece_count, key=lambda x: piece_count[x], reverse=True)
 
         print(f"Request pieces đã sắp xếp theo độ hiếm: {self.request_pieces}")
 
@@ -356,35 +357,15 @@ class Connection:
             return
 
         max_workers = 5
+        working_thread = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             while not all(self.torrent.pieces_have):
+
                 futures = {}
-                num_peers = len(self.peers)
-                
-                if num_peers == 0:
-                    print("No peers available, waiting for more peers...")
-                    time.sleep(5)
-                    continue
-                
-                # Calculate even distribution across peers
-                base_connections = max_workers // num_peers
-                extra_connections = max_workers % num_peers
-                
-                # First, ensure each peer gets at least `base_connections` threads
-                for peer in reversed(self.peers):
-                    for _ in range(base_connections):
-                        print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
-                        future = executor.submit(self.handle_peer_connection, peer)
-                        futures[future] = peer
-
-                # Distribute the extra connections to make use of all available threads
-                if extra_connections > 0:
-                    for i in range(extra_connections):
-                        peer = peers[i % num_peers]
-                        print(f"Connecting to peer {peer['ip']}:{peer['port']} (extra connection)...")
-                        future = executor.submit(self.handle_peer_connection, peer)
-                        futures[future] = peer
-
+                for peer in self.peers:
+                    print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
+                    future = executor.submit(self.handle_peer_connection, peer)
+                    futures[future] = peer
                 peers_to_remove = []
                 for future in futures:
                     peer = futures[future]
@@ -394,6 +375,9 @@ class Connection:
                             print(f"Connection attempt to {peer['ip']}:{peer['port']} finished with no result.")
                         elif result is True:
                             print(f"Successfully connected to peer {peer['ip']}:{peer['port']}.")
+                            working_thread += 1
+                            self.peers.remove(peer)
+                            self.peers.append(peer)
                         elif result is False:
                             print(f"Failed to connect to peer {peer['ip']}:{peer['port']}. Removing from list.")
                             peers_to_remove.append(peer)
@@ -408,30 +392,47 @@ class Connection:
                     if peer in self.peers:
                         self.peers.remove(peer)
 
-
-
     def handle_peer_connection(self, peer):
         try:
             sock = None
-            current_piece_index = None
-            progress = 0
-            banned_index = []
             if all(self.torrent.pieces_have):
                 return True
             sock = self.connect_to_peer(peer)
             if not sock:
-                #self.peers.remove(peer)2
+                self.peers.remove(peer)
                 return False
-        except:
+            peer['sock'] = sock
+            self.retry_pieces[peer['peerid']] = [0] * self.torrent.num_pieces
+            download_thread = Thread(target=self.download_peer, args=(peer,))
+            download_thread.start()
+            return True
+            
+        except Exception as e:
             print(f"Error handling peer connection: {e}")
+            return
+    
+    def download_peer(self, peer):
+
+        if 'sock' not in peer or peer['sock'].fileno() == -1:
+            self.peers.remove(peer)
+            return
+        sock = peer['sock']
+        current_piece_index = None
+        progress = 0
+        banned_index = []
         try:
             while not all(self.torrent.pieces_have):
-                msg_id, payload = self.receive_message(sock)
+                try:
+                    msg_id, payload = self.receive_message(sock)
+                    if msg_id is None:
+                        break
+                except socket.timeout:
+                    continue  # Skip and retry to prevent blocking
+                
                 print(f"Received message ID {msg_id}")
-                if msg_id is None:
-                    break
+                
                 if msg_id == 7:
-                    finished, verified =  self.handle_piece(sock, payload)   
+                    finished, verified = self.handle_piece(sock, payload)
                     if finished == False:
                         progress += block_size
                         self.start_request(sock, current_piece_index, progress)
@@ -440,11 +441,9 @@ class Connection:
                         self.torrent.pieces_have[current_piece_index] = True
                         for peer in reversed(self.peers):
                             if 'sock' not in peer or peer['sock'].fileno() == -1:
-                                self.peers.remove(peer)
                                 continue
                             self.send_message(peer['sock'], 4, struct.pack("!I", current_piece_index))
-                        current_piece_index = self.request_pieces[0]
-                        self.request_pieces.remove(current_piece_index)
+                        current_piece_index = self.request_pieces.pop()
                         self.start_request(sock, current_piece_index)
                         progress = 0
                         continue
@@ -454,7 +453,7 @@ class Connection:
                             self.start_request(sock, current_piece_index)
                         else:
                             banned_index.append(current_piece_index)
-                            current_piece_index = [val for val in self.request_pieces if val not in banned_index][0]
+                            current_piece_index = next(val for val in reversed(self.request_pieces) if val not in banned_index)
                             self.request_pieces.remove(current_piece_index)
                             self.start_request(sock, current_piece_index)
                 if msg_id == 5:
@@ -465,18 +464,19 @@ class Connection:
                 if msg_id == 1:
                     available_pieces = self.piece_peer_map.get_by_value(peer['peerid']).intersection(self.request_pieces)
                     if not available_pieces:
-                        print(f"Peer {peer['ip']} không còn piece nào để tải.")
+                        print(f"Peer {peer['ip']} has no more pieces to download.")
                         continue
                     current_piece_index = random.choice(list(available_pieces))
                     self.request_pieces.remove(current_piece_index)
                     self.start_request(sock, current_piece_index)
+            
             return True
         except Exception as e:
             print(f"Error handling peer connection: {e}")
-            print('Mất kết nối tới Peer...')
+            print('Lost connection to Peer...')
             return None
         finally:
-            if not all(self.torrent.pieces_have) and current_piece_index != None:
+            if not all(self.torrent.pieces_have) and current_piece_index is not None:
                 self.request_pieces.insert(0, current_piece_index)
             if sock:
                 sock.close()
@@ -503,8 +503,6 @@ class Connection:
             sock.sendall(handshake_message)
 
             response = sock.recv(68)
-            peer['sock'] = sock
-            self.retry_pieces[peer['peerid']] = [0] * self.torrent.num_pieces
 
             if len(response) != 68:
                 print("Failed to receive a proper handshake response.")
@@ -534,6 +532,7 @@ class Connection:
 
         except Exception as e:
             print(f"Failed to connect to peer {peer['ip']}:{peer['port']}: {e}")
+            # self.peers.remove(peer)
             return None
         
     def handle_client(self, client_sock, client_addr, create_handshake_message):
@@ -846,7 +845,7 @@ class Connection:
                 break
         return peer_id
 
-    def verify_hash():
+    def verify_file_hash(self):
         pass
 
 def upload_torrent(torrent_path):

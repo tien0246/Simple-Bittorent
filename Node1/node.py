@@ -13,7 +13,7 @@ import random
 import struct
 import atexit
 
-DEBUG = True
+DEBUG = False
 
 session = requests.Session()
 # lock = threading.Lock()
@@ -22,7 +22,7 @@ peer_id = hashlib.sha1(str(random.randint(0, sys.maxsize)).encode()).hexdigest()
 server_url = ''
 username = ''
 piece_length = 512 * 1024
-block_size = 256 * 1024
+block_size = 16 * 1024
 torrents_dir = 'torrents'
 downloads_dir = 'downloads'
 
@@ -360,7 +360,8 @@ class Connection:
         working_thread = 0
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             while not all(self.torrent.pieces_have):
-
+                if working_thread >= max_workers:
+                    continue
                 futures = {}
                 for peer in self.peers:
                     print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
@@ -370,7 +371,7 @@ class Connection:
                 for future in futures:
                     peer = futures[future]
                     try:
-                        result = future.result()  # This will return the output of handle_peer_connection
+                        result = future.result()
                         if result is None:
                             print(f"Connection attempt to {peer['ip']}:{peer['port']} finished with no result.")
                         elif result is True:
@@ -475,7 +476,7 @@ class Connection:
             print(f"Error handling peer connection: {e}")
             print('Lost connection to Peer...')
             return None
-        finally:
+        finally:    
             if not all(self.torrent.pieces_have) and current_piece_index is not None:
                 self.request_pieces.insert(0, current_piece_index)
             if sock:
@@ -1051,7 +1052,7 @@ if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
     server_url = 'http://127.0.0.1:8000'
     # info_hash = '2b3b725921e07d240f396d8f9dc6a9760ae6688b'
-    info_hash = '61b73ce492832213f915b7459ea1765711450cad'
+    info_hash = '0ed0db92898caeea83b39ed91cd200f0e5c47f4a'
     try:
         while True:
             print("1. Register")

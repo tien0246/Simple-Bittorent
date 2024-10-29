@@ -47,18 +47,20 @@ class Torrent:
         self.paths = torrent_data['paths']
         self.pieces_have = [False] * self.num_pieces if pieces is None else pieces
         self.piece_hashes = [self.pieces[i*20:(i+1)*20] for i in range(self.num_pieces)]
-    
-def create_torrent(path, tracker_url, output_file=None):
+def create_info(path):
     if not os.path.exists(path):
-        print("File or directory does not exist")
-        return
+        raise FileNotFoundError("File hoặc thư mục không tồn tại")
 
     pieces = []
     name = os.path.basename(path).encode('utf-8')
+    total_size = 0
+    pieces_have = []
+    piece_hashes = []
 
     if os.path.isfile(path):
         # Single file
         file_size = os.path.getsize(path)
+        total_size = file_size
 
         with open(path, 'rb') as f:
             while True:
@@ -79,7 +81,6 @@ def create_torrent(path, tracker_url, output_file=None):
     else:
         # Multiple files
         files = []
-        total_size = 0
         buffer = b''
 
         for root, _, filenames in os.walk(path):
@@ -114,6 +115,14 @@ def create_torrent(path, tracker_url, output_file=None):
             'pieces': pieces_concatenated
         }
 
+    return info
+    
+def create_torrent(path, tracker_url, output_file=None):
+    try:
+        info = create_info(path)
+    except FileNotFoundError as e:
+        print(e)
+        return
 
     torrent = {
         'announce': tracker_url,
@@ -122,14 +131,17 @@ def create_torrent(path, tracker_url, output_file=None):
         'info': info
     }
 
-    print(calculate_info_hash(info))
+    info_hash = calculate_info_hash(info)
+    print(info_hash)
 
     torrent_file = bencodepy.encode(torrent)
-    torrent_filename = (output_file or calculate_info_hash(info)) + '.torrent'
+    torrent_filename = (output_file or info_hash) + '.torrent'
 
     torrent_path = os.path.join(torrents_dir, torrent_filename)
     with open(torrent_path, 'wb') as f:
         f.write(torrent_file)
+
+    print(f"Torrent file created at: {torrent_path}")
 
 def parse_torrent_file(torrent_path):
     with open(torrent_path, 'rb') as f:
@@ -861,27 +873,12 @@ class Connection:
 
     def verify_file_hash(self):
         print('Verifying hashes...')
-        sha1 = hashlib.sha1()
-        try:
-            with open(self.torrent.name, 'rb') as f:
-                while True:
-                    data = f.read(piece_length)
-                    if not data:
-                        break
-                    sha1.update(data)
-            computed_hash = sha1.hexdigest()
-            if computed_hash == self.torrent.info_hash:
-                print('Verify hash success.')
-            else:
-                print('Verify hash failed.')
-                print(f"Original Hash: {self.torrent.info_hash}")
-                print(f"Computed Hash: {computed_hash}")
-        except Exception as e:
-            exc_type, exc_obj, exc_tb = sys.exc_info()
-            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-            print(exc_type, fname, exc_tb.tb_lineno)
-            return None
-
+        downloaded_info = create_info(os.path.join(downloads_dir, self.torrent.name))
+        downloaded_info_hash = calculate_info_hash(downloaded_info)
+        if downloaded_info_hash == self.torrent.info_hash:
+            print('File hash verified')
+        else:
+            print('File hash verification failed')
 
 def upload_torrent(torrent_path):
     url = f"{server_url}/upload_torrent"
@@ -1083,8 +1080,8 @@ if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
     server_url = 'http://127.0.0.1:8000'
     # info_hash = '2b3b725921e07d240f396d8f9dc6a9760ae6688b'
-    # info_hash = 'b6edd4ed3086242ca1cbc338844eb00c3ef2afca'
-    info_hash = 'ed30e8555f5a39084d7b9455932e5ddfc23a50c3'
+    info_hash = '48daaa8bb3e23a026a4a6d1147ced0a59c24d8ca'
+    # info_hash = 'ed30e8555f5a39084d7b9455932e5ddfc23a50c3'
     try:
         while True:
             print("1. Register")

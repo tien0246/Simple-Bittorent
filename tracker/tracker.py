@@ -11,11 +11,13 @@ app = Flask(__name__)
 app.secret_key = 'secret_key'
 lock = threading.Lock()
 
-torrents_dir = 'torrents'
-hash_file = 'hashes.json'
-users_file = 'users.json'
-torrents_file = 'torrents.json'
-peers_file = 'peers.json'
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+torrents_dir = os.path.join(current_dir, 'torrents')
+hash_file = os.path.join(current_dir, 'hashes.json')
+users_file = os.path.join(current_dir, 'users.json')
+torrents_file = os.path.join(current_dir, 'torrents.json')
+peers_file = os.path.join(current_dir, 'peers.json')
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)

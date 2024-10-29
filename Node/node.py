@@ -17,6 +17,8 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 DEBUG = False
 
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
 session = requests.Session()
 peer_port = 50000 + random.randint(0, 5000)
 peer_id = hashlib.sha1(str(random.randint(0, sys.maxsize)).encode()).hexdigest()
@@ -24,8 +26,8 @@ server_url = ''
 username = ''
 piece_length = 512 * 1024
 block_size = 16 * 1024
-torrents_dir = 'torrents'
-downloads_dir = 'downloads'
+torrents_dir = os.path.join(current_dir, 'torrents')
+downloads_dir = os.path.join(current_dir, 'downloads')
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)

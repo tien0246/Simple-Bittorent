@@ -10,12 +10,12 @@ from functools import wraps
 app = Flask(__name__)
 app.secret_key = 'secret_key'
 lock = threading.Lock()
-
-torrents_dir = 'torrents'
-hash_file = 'hashes.json'
-users_file = 'users.json'
-torrents_file = 'torrents.json'
-peers_file = 'peers.json'
+current_dir = os.path.dirname(os.path.abspath(__file__))
+torrents_dir = os.path.join(current_dir, 'torrents')
+hash_file = os.path.join(current_dir, 'hashes.json')
+users_file = os.path.join(current_dir, 'users.json')
+torrents_file = os.path.join(current_dir, 'torrents.json')
+peers_file = os.path.join(current_dir, 'peers.json')
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
@@ -81,7 +81,6 @@ def announce():
         missing_params = [param for param in required_params if not request.args.get(param)]
         if missing_params:
             return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
-
         info_hash = request.args.get('info_hash')
         peer_id = request.args.get('peer_id')
         ip = request.remote_addr
@@ -93,19 +92,16 @@ def announce():
 
         peers = load_json(peers_file)
         torrents = load_json(torrents_file)
-
         if info_hash not in peers:
             peers[info_hash] = {}
             if info_hash not in torrents:
                 return make_bencoded_response({'failure reason': 'Not found'}, 404)
-
         if event == 'started':
             required_params = ['port', 'uploaded', 'downloaded', 'left']
             missing_params = [param for param in required_params if not request.args.get(param)]
             
             if missing_params:
                 return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
-            
             peer_info = {
                 'ip': ip,
                 'port': int(port),
@@ -113,14 +109,11 @@ def announce():
                 'downloaded': int(downloaded),
                 'left': int(left)
             }
-
             if peer_id not in peers[info_hash]:
                 peers[info_hash][peer_id] = peer_info
                 torrents[info_hash]['seeder' if int(left) == 0 else 'leecher'] += 1
             else:
                 peers[info_hash][peer_id].update(peer_info)
-            
-
         elif event == 'stopped':
             if peer_id in peers[info_hash]:
                 torrents[info_hash]['seeder' if peers[info_hash][peer_id]['left'] == 0 else 'leecher'] -= 1
@@ -129,9 +122,7 @@ def announce():
                     del peers[info_hash]
             save_json(peers_file, peers)
             save_json(torrents_file, torrents)
-            return make_bencoded_response({'status': 'success'}, 200)
-
-            
+            return make_bencoded_response({'status': 'success'}, 200)      
         elif event == 'completed':
             if peer_id in peers[info_hash]:
                 peers[info_hash][peer_id]['left'] = 0
@@ -140,22 +131,18 @@ def announce():
                 torrents[info_hash]['completed'] += 1
             save_json(peers_file, peers)
             save_json(torrents_file, torrents)
-            return make_bencoded_response({'status': 'success'}, 200)
-        
+            return make_bencoded_response({'status': 'success'}, 200)  
         else:
             return make_bencoded_response({'failure reason': 'Invalid event'}, 400)
-
         save_json(peers_file, peers)
         save_json(torrents_file, torrents)
-
         response_dict = {
             'peers': peers[info_hash]
         }
         return make_bencoded_response(response_dict, 200)
-
     except Exception as e:
         return make_bencoded_response({'failure reason': f'Unexpected error: {str(e)}'}, 500)
-
+    
 @app.route('/upload_torrent', methods=['POST'])
 @login_required
 def upload_torrent():
@@ -168,14 +155,11 @@ def upload_torrent():
     torrent_file = request.files.get('torrent')
     if not torrent_file:
         return make_bencoded_response({'failure reason': 'Missing torrent file'}, 400)
-
     info_hash = request.form['info_hash']
     name = request.form['name']
     torrents = load_json(torrents_file)
-
     if info_hash in torrents:
         return make_bencoded_response({'failure reason': 'Torrent already exists'}, 400)
-
     torrents[info_hash] = {
         'name': name,
         'date_uploaded': int(time.time()),
@@ -193,12 +177,9 @@ def upload_torrent():
             return make_bencoded_response({'failure reason': 'Invalid file size'}, 400)
     else:
         torrents[info_hash]['path'] = json.loads(request.form.get('path'))
-    
     save_json(torrents_file, torrents)
-
     torrent_path = f"{torrents_dir}/{info_hash + ".torrent"}"
     torrent_file.save(torrent_path)
-
     return make_bencoded_response({'status': 'success'}, 200)
 
 @app.route('/scrape', methods=['GET'])
@@ -208,7 +189,6 @@ def scrape():
     missing_params = [param for param in required_params if not request.form.get(param)]
     if missing_params:
         return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
-    
     info_hash = request.args.get('info_hash')
     torrents = load_json(torrents_file)
     if info_hash not in torrents:

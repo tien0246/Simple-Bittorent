@@ -332,8 +332,9 @@ class Connection:
         if self.request_pieces.empty():
             piece_count = {i: 0 for i, piece_have in enumerate(self.torrent.pieces_have) if not piece_have}
         else:
-            while not self.request_pieces.empty():
-                piece_count[self.request_pieces.get()] = 0
+            with self.lock:
+                while not self.request_pieces.empty():
+                    piece_count[self.request_pieces.get_nowait()] = 0
         for peer in self.peers:
             if 'bitfield' not in peer:
                 continue
@@ -343,10 +344,12 @@ class Connection:
         if random_first_piece:
             first_piece = random.choice(list(piece_count.keys()))
             piece_count[first_piece] += 1
-        while not self.request_pieces.empty():
-            self.request_pieces.get()
+        with self.lock:
+            while not self.request_pieces.empty():
+                self.request_pieces.get()
         for piece_index in sorted(piece_count, key=lambda x: piece_count[x], reverse=True):
-            self.request_pieces.put(piece_index)
+            with self.lock:
+                self.request_pieces.put(piece_index)
 
         print(f"Request pieces đã sắp xếp theo độ hiếm: {list(self.request_pieces.queue)}")
 
@@ -366,17 +369,18 @@ class Connection:
         while not all(self.torrent.pieces_have):
             if self.downloading_thread >= max_workers:
                     time.sleep(0.1)
-                    print(all(self.torrent.pieces_have))
+                    if DEBUG: print(all(self.torrent.pieces_have))
                     continue
             if not peers:
                 print("Không có peers nào để kết nối. Đang chờ...")
-                time.sleep(5)
-                return
+                break
             for peer in self.peers:
                 if self.downloading_thread >= max_workers:
                     break
                 print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
                 self.handle_peer_connection(peer)
+        while self.downloading_thread > 0:
+            pass
         self.verify_file_hash()
                     
 
@@ -413,11 +417,10 @@ class Connection:
             done = False
             while not all(self.torrent.pieces_have):
                 if done == True:
-                    # sock.settimeout(30)
                     if not self.request_pieces.empty():
                         current_piece_index = self.request_pieces.get_nowait()
-                        if self.start_request(sock, current_piece_index):
-                            done = True
+                        self.start_request(sock, current_piece_index)
+                        done = False
                     else:
                         time.sleep(0.1)
                         continue
@@ -429,12 +432,15 @@ class Connection:
                             if (self.retry_pieces(current_piece_index, peer['peerid'])):
                                 time.sleep(1)
                                 continue
-                            else:   
+                            else: 
                                 break
                 except:
                     if not all(self.torrent.pieces_have) and current_piece_index is not None:
-                        self.retry_pieces(current_piece_index, peer['peerid'])
-                        break
+                        if (self.retry_pieces(current_piece_index, peer['peerid'])):
+                            time.sleep(1)
+                            continue
+                        else: 
+                            break
 
                 print(f"Received message ID {msg_id}")
 
@@ -446,19 +452,18 @@ class Connection:
                         continue
                     if finished and verified:
                         self.torrent.pieces_have[current_piece_index] = True
-                        for peer in reversed(self.peers):
-                            if 'sock' not in peer or peer['sock'].fileno() == -1:
-                                continue
-                            try:
-                                self.send_message(peer['sock'], 4, struct.pack("!I", current_piece_index))
-                            except:
-                                print(f'Cannot send have message to {peer['ip']}:{peer['port']}')
-                                continue
-                        # with self.lock:
+                        with self.lock:
+                            for peer in reversed(self.peers):
+                                if 'sock' not in peer or peer['sock'].fileno() == -1:
+                                    continue
+                                try:
+                                    self.send_message(peer['sock'], 4, struct.pack("!I", current_piece_index))
+                                except:
+                                    print(f'Cannot send have message to {peer['ip']}:{peer['port']}')
+                                    continue
                         if not self.request_pieces.empty():
                             current_piece_index = self.request_pieces.get_nowait()
-                            if self.start_request(sock, current_piece_index):
-                                done = True
+                            self.start_request(sock, current_piece_index)
                         else:
                             done = True
                         progress = 0
@@ -468,8 +473,11 @@ class Connection:
                         if self.retry_pieces(current_piece_index, peer['peerid']):
                             self.start_request(sock, current_piece_index)
                         else:
-                            self.request_pieces.get_nowait()
-                            self.start_request(sock, current_piece_index)
+                            if not self.request_pieces.empty():
+                                self.request_pieces.get_nowait()
+                                self.start_request(sock, current_piece_index)
+                            else:
+                                done = True
                         continue
                 if msg_id == 5:
                     peer['bitfield'] = self.parse_bitfield(payload, self.torrent.num_pieces)
@@ -477,8 +485,11 @@ class Connection:
                     have_pieces = self.parse_bitfield(payload, self.torrent.num_pieces)
                     self.send_interested(sock, have_pieces)
                 if msg_id == 1:
-                    current_piece_index = self.request_pieces.get_nowait()
-                    self.start_request(sock, current_piece_index)
+                    if not self.request_pieces.empty():
+                        current_piece_index = self.request_pieces.get_nowait()
+                        self.start_request(sock, current_piece_index)
+                    else:
+                        done = True
 
             return True
         except Exception as e:
@@ -491,7 +502,7 @@ class Connection:
         finally:
             self.downloading_thread -= 1
             if not all(self.torrent.pieces_have) and current_piece_index is not None:
-                self.retry_pieces(current_piece_index, peer['peerid'])
+                self.request_pieces.put_nowait(current_piece_index)
             if sock:
                 sock.close()
 
@@ -512,7 +523,7 @@ class Connection:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((peer['ip'], peer['port']))
-            sock.settimeout(5)
+            sock.settimeout(1)
 
             handshake_message = self.create_handshake_message()
             sock.sendall(handshake_message)
@@ -738,16 +749,11 @@ class Connection:
 
     def start_request(self, sock, piece_index, begin=0):
         if DEBUG: time.sleep(0.5)
-        if self.request_pieces.empty() and begin == 0 and piece_index != self.torrent.num_pieces - 1:
-            print("No pieces left to request.")
-            sock.close()
-            return True
         length = min(block_size, self.torrent.total_length - piece_index * self.torrent.piece_length - begin)
 
         payload = struct.pack("!III", piece_index, begin, length)
         self.send_message(sock, 6, payload)
         print(f"Requested piece {piece_index} from peer.")
-        return False
 
     def handle_piece(self, sock, payload):
         piece_index = struct.unpack("!I", payload[:4])[0]
@@ -1083,7 +1089,11 @@ if __name__ == '__main__':
     # server_url = 'http://10.0.221.122:8000'
     server_url = 'http://127.0.0.1:8000'
     # info_hash = '2b3b725921e07d240f396d8f9dc6a9760ae6688b'
+<<<<<<< Updated upstream
     # info_hash = 'b6edd4ed3086242ca1cbc338844eb00c3ef2afca'
+=======
+    # info_hash = '48daaa8bb3e23a026a4a6d1147ced0a59c24d8ca'
+>>>>>>> Stashed changes
     info_hash = 'ed30e8555f5a39084d7b9455932e5ddfc23a50c3'
     try:
         while True:

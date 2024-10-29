@@ -54,8 +54,6 @@ def create_info(path):
     pieces = []
     name = os.path.basename(path).encode('utf-8')
     total_size = 0
-    pieces_have = []
-    piece_hashes = []
     if os.path.isfile(path):
         file_size = os.path.getsize(path)
         total_size = file_size
@@ -961,7 +959,7 @@ def start_as_leecher(torrent, peer_id, pieces = None):
 if __name__ == '__main__':
     server_url = 'http://127.0.0.1:8000'
     info_hash = '58f9ce000f89abad1d5c1c72fbaabe9bf797256b'
-    # info_hash = 'ed30e8555f5a39084d7b9455932e5ddfc23a50c3'
+
     try:
         while True:
             print("1. Register")

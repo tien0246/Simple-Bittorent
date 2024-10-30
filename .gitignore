@@ -1,2 +1,6 @@
+.vscode
+*.torrent
+*.json
 *
+!/**/
 !*.py

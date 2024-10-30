@@ -36,8 +36,10 @@ if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
 if not os.path.exists(downloads_dir):
     os.makedirs(downloads_dir)
+
+
 class Torrent:
-    def __init__(self, torrent_path, pieces = None):
+    def __init__(self, torrent_path, pieces=None):
         self.torrent_path = torrent_path
         torrent_data = parse_torrent_file(torrent_path)
         self.info = torrent_data['info']
@@ -50,11 +52,12 @@ class Torrent:
         self.paths = torrent_data['paths']
         self.pieces_have = [False] * self.num_pieces if pieces is None else pieces
         self.piece_hashes = [self.pieces[i*20:(i+1)*20] for i in range(self.num_pieces)]
-        self.download_bar = None
+
 
 def create_info(path):
     if not os.path.exists(path):
         raise FileNotFoundError("File or directory does not exist")
+
     pieces = []
     name = os.path.basename(path).encode('utf-8')
     total_size = 0
@@ -63,6 +66,7 @@ def create_info(path):
         file_size = os.path.getsize(path)
         total_size = file_size
         num_pieces = (file_size + piece_length - 1) // piece_length
+
         with open(path, 'rb') as f, alive_bar(num_pieces, title='Creating torrent for single file') as bar:
             while True:
                 piece = f.read(piece_length)
@@ -70,26 +74,30 @@ def create_info(path):
                     break
                 pieces.append(hashlib.sha1(piece).digest())
                 bar()
+
         pieces_concatenated = b''.join(pieces)
+
         info = {
             'length': file_size,
             'name': name,
             'piece length': piece_length,
             'pieces': pieces_concatenated
         }
+
     else:
         files = []
         buffer = b''
+
         for root, _, filenames in os.walk(path):
             for filename in filenames:
                 file_path = os.path.join(root, filename)
                 file_size = os.path.getsize(file_path)
-                num_pieces = (file_size + piece_length - 1) // piece_length
                 total_size += file_size
                 relative_path = os.path.relpath(file_path, path)
                 path_components = [component.encode('utf-8') for component in relative_path.split(os.sep)]
                 files.append({'length': file_size, 'path': path_components})
-                with open(file_path, 'rb') as f, alive_bar(num_pieces, title='Creating torrent for file: ' + filename) as bar:
+
+                with open(file_path, 'rb') as f:
                     while True:
                         chunk = f.read(piece_length - len(buffer))
                         if not chunk:
@@ -99,37 +107,46 @@ def create_info(path):
                             piece_data = buffer[:piece_length]
                             pieces.append(hashlib.sha1(piece_data).digest())
                             buffer = buffer[piece_length:]
-                        bar()
+
         if buffer:
             pieces.append(hashlib.sha1(buffer).digest())
+
         pieces_concatenated = b''.join(pieces)
+
         info = {
             'files': files,
             'name': name,
             'piece length': piece_length,
             'pieces': pieces_concatenated
         }
+
     return info
-    
+
+
 def create_torrent(path, tracker_url, output_file=None):
     try:
         info = create_info(path)
     except FileNotFoundError as e:
         print(e)
         return
+
     torrent = {
         'announce': tracker_url,
         'creation date': int(time.time()),
         'created by': username.encode('utf-8'),
         'info': info
     }
+
     info_hash = calculate_info_hash(info)
     torrent_file = bencodepy.encode(torrent)
     torrent_filename = (output_file or info_hash) + '.torrent'
+
     torrent_path = os.path.join(torrents_dir, torrent_filename)
     with open(torrent_path, 'wb') as f:
         f.write(torrent_file)
+
     print(f"Torrent file created at: {torrent_path}")
+
 
 def parse_torrent_file(torrent_path):
     with open(torrent_path, 'rb') as f:
@@ -150,6 +167,7 @@ def parse_torrent_file(torrent_path):
             total_length += file_info[b'length']
             file_path = [p.decode() for p in file_info[b'path']]
             paths.append({'length': file_info[b'length'], 'path': file_path})
+
     else:
         raise ValueError("Invalid torrent file: no length or files")
     name = info[b'name'].decode('utf-8')
@@ -164,19 +182,25 @@ def parse_torrent_file(torrent_path):
         'paths': paths
     }
 
+
 def calculate_info_hash(info):
     return hashlib.sha1(bencodepy.encode(info)).hexdigest()
+
+
 class BiMap:
     def __init__(self):
         self.forward = {}
         self.backward = {}
+
     def add(self, key, value):
         if key not in self.forward:
             self.forward[key] = set()
         if value not in self.backward:
             self.backward[value] = set()
+
         self.forward[key].add(value)
         self.backward[value].add(key)
+
     def remove(self, key, value):
         if key in self.forward:
             self.forward[key].discard(value)
@@ -186,12 +210,16 @@ class BiMap:
             self.backward[value].discard(key)
             if not self.backward[value]:
                 del self.backward[value]
+
     def get_by_key(self, key):
         return self.forward.get(key, set())
+
     def get_by_value(self, value):
         return self.backward.get(value, set())
+
     def __repr__(self):
         return f"BiMap(forward={self.forward}, backward={self.backward})"
+
 
 class Connection:
     def __init__(self, torrent, client_peer_id):
@@ -229,10 +257,12 @@ class Connection:
             length = struct.unpack("!I", length_bytes)[0]
             if length == 0:
                 return None, None
+
             msg_id_bytes = self._recv_all(sock, 1)
             if not msg_id_bytes:
                 return None, None
             msg_id = struct.unpack("!B", msg_id_bytes)[0]
+
             payload = b''
             if length > 1:
                 payload = self._recv_all(sock, length - 1)
@@ -248,7 +278,7 @@ class Connection:
         reserved = b'\x00' * 8
         handshake = struct.pack("!B", pstrlen) + pstr + reserved + bytes.fromhex(self.torrent.info_hash) + self.client_peer_id
         return handshake
-    
+
     def create_bitfield(self, pieces):
         bitfield = bytearray()
         byte = 0
@@ -261,7 +291,7 @@ class Connection:
         if len(pieces) % 8 != 0:
             bitfield.append(byte)
         return bytes(bitfield)
-    
+
     def parse_bitfield(self, bitfield, num_pieces):
         peer_pieces = [False] * num_pieces
         for i in range(num_pieces):
@@ -271,7 +301,7 @@ class Connection:
                 if bitfield[byte_index] & (1 << bit_index):
                     peer_pieces[i] = True
         return peer_pieces
-    
+
     def send_interested(self, sock, is_interested):
         if is_interested:
             self.send_message(sock, 2, self.aes_key[0])
@@ -281,7 +311,7 @@ class Connection:
             self.send_message(sock, 3)
             if DEBUG:
                 print("Sent Not Interested")
-    
+
     def process_message(self, sock, msg_id, payload):
         if msg_id == 0:
             pass
@@ -323,7 +353,7 @@ class Connection:
             if DEBUG:
                 print("Unknown message ID")
 
-    def update_request_pieces(self, peer_id, peer_bitfield, random_first_piece = False):
+    def update_request_pieces(self, peer_id, peer_bitfield, random_first_piece=False):
         pieces_have = {i for i, has_piece in enumerate(peer_bitfield) if has_piece}
         for piece_index in pieces_have:
             self.piece_peer_map.add(piece_index, peer_id)
@@ -331,8 +361,9 @@ class Connection:
         if self.request_pieces.empty():
             piece_count = {i: 0 for i, piece_have in enumerate(self.torrent.pieces_have) if not piece_have}
         else:
-            while not self.request_pieces.empty():
-                piece_count[self.request_pieces.get()] = 0
+            with self.lock:
+                while not self.request_pieces.empty():
+                    piece_count[self.request_pieces.get_nowait()] = 0
         for peer in self.peers:
             if 'bitfield' not in peer:
                 continue
@@ -352,12 +383,6 @@ class Connection:
         if DEBUG:
             print(f"Request pieces sorted by rarity: {list(self.request_pieces.queue)}")
 
-    def download_progress(self):
-        with alive_bar(self.torrent.num_pieces, title='Downloading', manual=True, bar='blocks') as bar:
-            while not all(self.torrent.pieces_have):
-                bar(sum(self.torrent.pieces_have) / self.torrent.num_pieces)
-                time.sleep(1)
-
     def run(self, peers):
         if not peers:
             print('No peer found.')
@@ -365,29 +390,27 @@ class Connection:
         peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id and peer['port'] != peer_port]
         self.peers = peers
         if not peers:
-            print("No peers to connect....")
+            print("No peers to connect. Waiting...")
             time.sleep(5)
             return
 
         max_workers = 5
-        # threading.Thread(target=self.download_progress).start()
-        with alive_bar(self.torrent.num_pieces, title='Downloading', bar='smooth', theme='smooth') as self.download_bar:
-            while not all(self.torrent.pieces_have):
+        while not all(self.torrent.pieces_have):
+            if self.downloading_thread >= max_workers:
+                time.sleep(10)
+                continue
+            if not peers:
+                print("No peers to connect. Waiting...")
+                break
+            for peer in self.peers:
                 if self.downloading_thread >= max_workers:
-                        time.sleep(10)
-                        continue
-                if not peers:
-                    print("No peers to connect...")
                     break
-                for peer in self.peers:
-                    if self.downloading_thread >= max_workers:
-                        break
-                    if DEBUG:
-                        print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
-                    self.handle_peer_connection(peer)
+                if DEBUG:
+                    print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
+                self.handle_peer_connection(peer)
         while self.downloading_thread > 0:
             pass
-        self.verify_file_hash()                 
+        self.verify_file_hash()
 
     def handle_peer_connection(self, peer):
         try:
@@ -404,12 +427,13 @@ class Connection:
             self.retry_counts[peer['peerid']] = [0] * self.torrent.num_pieces
             download_thread = Thread(target=self.download_peer, args=(peer,))
             download_thread.start()
-            return True       
+            return True
+
         except Exception as e:
             if DEBUG:
                 print(f"Error handling peer connection: {e}")
             return
-    
+
     def download_peer(self, peer):
         try:
             self.downloading_thread += 1
@@ -420,83 +444,88 @@ class Connection:
             current_piece_index = None
             progress = 0
             done = False
-            while not all(self.torrent.pieces_have):
-                if done == True:
-                    if not self.request_pieces.empty():
-                        current_piece_index = self.request_pieces.get()
-                        self.start_request(sock, current_piece_index)
-                        done = False
-                    else:
-                        continue
-                try:
-                    msg_id, payload = self.receive_message(sock)
-                    if msg_id is None:
-                        if not all(self.torrent.pieces_have) and current_piece_index is not None:
-                            if DEBUG:
-                                print('Cannot receive message')
-                            if (self.retry_pieces(current_piece_index, peer['peerid'])):
-                                continue
-                            else: 
-                                break
-                except:
-                    if not all(self.torrent.pieces_have) and current_piece_index is not None:
-                        if (self.retry_pieces(current_piece_index, peer['peerid'])):
-                            time.sleep(1)
-                            continue
-                        else: 
-                            break
-                if DEBUG:
-                    print(f"Received message ID {msg_id}")
-                if msg_id == 7:
-                    finished, verified = self.handle_piece(payload)
-                    if finished == False:
-                        progress += block_size
-                        self.start_request(sock, current_piece_index, progress)
-                        continue
-                    if finished and verified:
-                        self.torrent.pieces_have[current_piece_index] = True
-                        with self.lock:
-                            for peer in reversed(self.peers):
-                                if 'sock' not in peer or peer['sock'].fileno() == -1:
-                                    continue
-                                try:
-                                    self.send_message(peer['sock'], 4, struct.pack("!I", current_piece_index))
-                                except:
-                                    if DEBUG:
-                                        print(f'Cannot send have message to {peer['ip']}:{peer['port']}')
-                                    continue
+            total_pieces = self.torrent.num_pieces
+            with alive_bar(total_pieces, title='Downloading from peer {}'.format(peer['ip'])) as bar:
+                while not all(self.torrent.pieces_have):
+                    if done:
                         if not self.request_pieces.empty():
                             current_piece_index = self.request_pieces.get()
                             self.start_request(sock, current_piece_index)
+                            done = False
                         else:
-                            done = True
-                        progress = 0
-                        self.download_bar()
-                        continue
-                    if finished is None or (finished and not verified):
-                        progress = 0
-                        if self.retry_pieces(current_piece_index, peer['peerid']):
-                            self.start_request(sock, current_piece_index)
-                        else:
+                            continue
+                    try:
+                        msg_id, payload = self.receive_message(sock)
+                        if msg_id is None:
+                            if not all(self.torrent.pieces_have) and current_piece_index is not None:
+                                if DEBUG:
+                                    print('Cannot receive message')
+                                if self.retry_pieces(current_piece_index, peer['peerid']):
+                                    continue
+                                else:
+                                    break
+                    except:
+                        if not all(self.torrent.pieces_have) and current_piece_index is not None:
+                            if self.retry_pieces(current_piece_index, peer['peerid']):
+                                time.sleep(1)
+                                continue
+                            else:
+                                break
+
+                    if DEBUG:
+                        print(f"Received message ID {msg_id}")
+
+                    if msg_id == 7:
+                        finished, verified = self.handle_piece(payload)
+                        if finished == False:
+                            progress += block_size
+                            self.start_request(sock, current_piece_index, progress)
+                            continue
+                        if finished and verified:
+                            self.torrent.pieces_have[current_piece_index] = True
+                            with self.lock:
+                                for peer in reversed(self.peers):
+                                    if 'sock' not in peer or peer['sock'].fileno() == -1:
+                                        continue
+                                    try:
+                                        self.send_message(peer['sock'], 4, struct.pack("!I", current_piece_index))
+                                    except:
+                                        if DEBUG:
+                                            print(f"Cannot send have message to {peer['ip']}:{peer['port']}")
+                                        continue
                             if not self.request_pieces.empty():
-                                self.request_pieces.get()
+                                current_piece_index = self.request_pieces.get_nowait()
                                 self.start_request(sock, current_piece_index)
                             else:
                                 done = True
-                        continue
-                if msg_id == 5:
-                    have_pieces = self.parse_bitfield(payload, self.torrent.num_pieces)
-                    peer['bitfield'] = have_pieces
-                    is_interested = any(have_pieces[i] and not self.torrent.pieces_have[i] for i in range(len(have_pieces)))
-                    if is_interested:
-                        self.update_request_pieces(peer['peerid'], peer['bitfield'], random_first_piece=True)
-                    self.send_interested(sock, is_interested)
-                if msg_id == 1:
-                    if not self.request_pieces.empty():
-                        current_piece_index = self.request_pieces.get()
-                        self.start_request(sock, current_piece_index)
-                    else:
-                        done = True
+                            progress = 0
+                            bar()
+                            continue
+                        if finished is None or (finished and not verified):
+                            progress = 0
+                            if self.retry_pieces(current_piece_index, peer['peerid']):
+                                self.start_request(sock, current_piece_index)
+                            else:
+                                if not self.request_pieces.empty():
+                                    self.request_pieces.get_nowait()
+                                    self.start_request(sock, current_piece_index)
+                                else:
+                                    done = True
+                            continue
+                    if msg_id == 5:
+                        have_pieces = self.parse_bitfield(payload, self.torrent.num_pieces)
+                        peer['bitfield'] = have_pieces
+                        is_interested = any(have_pieces[i] and not self.torrent.pieces_have[i] for i in range(len(have_pieces)))
+                        if is_interested:
+                            self.update_request_pieces(peer['peerid'], peer['bitfield'], random_first_piece=True)
+                        self.send_interested(sock, is_interested)
+                    if msg_id == 1:
+                        if not self.request_pieces.empty():
+                            current_piece_index = self.request_pieces.get_nowait()
+                            self.start_request(sock, current_piece_index)
+                        else:
+                            done = True
+
             return True
         except Exception as e:
             if DEBUG:
@@ -516,71 +545,87 @@ class Connection:
     def retry_pieces(self, piece_index, peerid):
         self.retry_counts[peerid][piece_index] += 1
         self.request_pieces.put_nowait(piece_index)
-        if DEBUG:
-            if self.retry_counts[peerid][piece_index] > self.max_retries:
+        if self.retry_counts[peerid][piece_index] > self.max_retries:
+            if DEBUG:
                 print(f"\nReached max retries for piece {piece_index}. Skipping.")
-            else:
+            return False
+        else:
+            if DEBUG:
                 print(f"\nRetrying piece {piece_index}. Attempt {self.retry_counts[peerid][piece_index]}")
-        return self.retry_counts[peerid][piece_index] > self.max_retries
-                
+            return True
+
     def connect_to_peer(self, peer):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((peer['ip'], peer['port']))
             sock.settimeout(5)
+
             handshake_message = self.create_handshake_message()
             sock.sendall(handshake_message)
+
             response = sock.recv(68)
+
             if len(response) != 68:
                 if DEBUG:
                     print("Failed to receive a proper handshake response.")
                 sock.close()
                 return None
+
             if response[:20] != handshake_message[:20]:
                 if DEBUG:
                     print("Invalid handshake received. Closing connection.")
                 sock.close()
                 return None
+
             received_info_hash = response[28:48]
             received_peer_id = response[48:68]
+
             if received_info_hash.hex() != self.torrent.info_hash:
                 if DEBUG:
                     print("Info hash mismatch. Closing connection.")
                 sock.close()
                 return None
+
             if received_peer_id.hex() != peer['peerid']:
                 if DEBUG:
                     print("Connected wrong peer. Closing connection.")
                 sock.close()
                 return None
+
             if DEBUG:
                 print(f"Connected to peer {peer['ip']}:{peer['port']}")
             return sock
+
         except Exception as e:
             if DEBUG:
                 print(f"Failed to connect to peer {peer['ip']}:{peer['port']}: {e}")
             return None
-             
+
     def handle_client(self, client_sock, client_addr, create_handshake_message):
         try:
             if DEBUG:
                 print(f"Received connection from {client_addr}")
+
             handshake = client_sock.recv(68)
             if len(handshake) != 68:
                 if DEBUG:
                     print("Invalid handshake received. Closing connection.")
                 client_sock.close()
                 return
+
             received_info_hash = handshake[28:48]
             if received_info_hash.hex() != self.torrent.info_hash:
                 if DEBUG:
                     print("Info hash mismatch. Disconnecting.")
                 client_sock.close()
                 return
+
             response_handshake = create_handshake_message()
             client_sock.send(response_handshake)
+
             if DEBUG:
                 print(f"Handshake successful with peer {client_addr}")
+
             bitfield_message = self.create_bitfield(self.torrent.pieces_have)
             self.send_message(client_sock, 5, bitfield_message)
             while True:
@@ -592,6 +637,7 @@ class Connection:
                 if msg_id is None:
                     break
                 self.process_message(client_sock, msg_id, payload)
+
         except Exception as e:
             if DEBUG:
                 exc_type, exc_obj, exc_tb = sys.exc_info()
@@ -609,14 +655,17 @@ class Connection:
             server_sock.listen(5)
             if DEBUG:
                 print(f"Listening for incoming connections on port {port}...")
+
             while True:
                 time.sleep(2)
                 client_sock, client_addr = server_sock.accept()
+
                 client_thread = threading.Thread(
                     target=self.handle_client,
                     args=(client_sock, client_addr, self.create_handshake_message)
                 )
                 client_thread.start()
+
         except Exception as e:
             if DEBUG:
                 print(f"Error occurred while listening for handshakes: {e}")
@@ -629,11 +678,11 @@ class Connection:
         if DEBUG:
             print(f"Server started on port {port} in a separate thread.")
 
-
     def handle_request(self, sock, payload):
         piece_index, begin, length = struct.unpack("!III", payload)
         if DEBUG:
             print(f"Peer requested piece index: {piece_index}, begin: {begin}, length: {length}")
+
         if self.validate_request(piece_index, begin, length):
             self.send_piece(sock, piece_index, begin, length)
         else:
@@ -644,15 +693,20 @@ class Connection:
         num_pieces = len(self.torrent.pieces_have)
         if piece_index < 0 or piece_index >= num_pieces:
             return False
+
         if length <= 0 or length > block_size:
             return False
+
         total_file_size = self.torrent.total_length
         piece_length = self.torrent.piece_length
+
         piece_size = (total_file_size % piece_length) if piece_index == num_pieces - 1 else piece_length
         if piece_size == 0:
             piece_size = piece_length
+
         if begin < 0 or begin >= piece_size or begin + length > piece_size:
             return False
+
         return self.torrent.pieces_have[piece_index]
 
     def send_piece(self, sock, piece_index, begin, length):
@@ -671,10 +725,12 @@ class Connection:
         remaining_length = length
         data = b''
         current_offset = 0
+
         def read_from_file(file_path, file_offset, read_length):
             with open(file_path, 'rb') as f:
                 f.seek(file_offset)
-                return f.read(read_length)         
+                return f.read(read_length)
+
         if not self.torrent.paths:
             file_path = os.path.join(self.torrent.name)
             with open(file_path, 'rb') as f:
@@ -686,27 +742,35 @@ class Connection:
                 for file_info in self.torrent.paths:
                     file_length = file_info['length']
                     file_path = os.path.join(self.torrent.name, *file_info['path'])
+
                     if current_offset <= byte_offset < current_offset + file_length:
                         file_offset = byte_offset - current_offset
                         read_length = min(remaining_length, file_length - file_offset)
                         read_tasks.append(executor.submit(read_from_file, file_path, file_offset, read_length))
                         remaining_length -= read_length
                         byte_offset += read_length
+
                         if remaining_length <= 0:
                             break
+
                     current_offset += file_length
+
                 for task in read_tasks:
                     data += task.result()
+
         return data
-    
+
     def write_piece_data(self, piece_index, data):
         byte_offset = piece_index * self.torrent.piece_length
         remaining_data = data
         current_offset = 0
+
         downloads_folder = os.path.join(downloads_dir, self.torrent.name)
+
         if not self.torrent.paths:
             file_path = os.path.join(downloads_folder)
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
             open_mode = 'r+b' if os.path.exists(file_path) else 'w+b'
             with open(file_path, open_mode) as f:
                 f.seek(byte_offset)
@@ -716,29 +780,36 @@ class Connection:
                 file_length = file_info['length']
                 file_path = os.path.join(downloads_folder, *file_info['path'])
                 os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
                 if current_offset <= byte_offset < current_offset + file_length:
                     file_offset = byte_offset - current_offset
+
                     open_mode = 'r+b' if os.path.exists(file_path) else 'w+b'
                     with open(file_path, open_mode) as f:
                         write_size = min(len(remaining_data), file_length - file_offset)
                         f.seek(file_offset)
                         f.write(remaining_data[:write_size])
+
                     remaining_data = remaining_data[write_size:]
                     byte_offset += write_size
+
                     if not remaining_data:
                         break
+
                 current_offset += file_length
 
     def update_bitfield(self, sock, piece_index):
-        peer_ip ,peer_port = sock.getpeername()
+        peer_ip, peer_port = sock.getpeername()
         for p in self.peers:
             if p['ip'] == peer_ip and p['port'] == peer_port:
                 p['bitfield'][piece_index] = True
                 break
 
     def start_request(self, sock, piece_index, begin=0):
-        # if DEBUG: time.sleep(1)
+        if DEBUG:
+            time.sleep(1)
         length = min(block_size, self.torrent.total_length - piece_index * self.torrent.piece_length - begin)
+
         payload = struct.pack("!III", piece_index, begin, length)
         self.send_message(sock, 6, payload)
         if DEBUG:
@@ -756,6 +827,7 @@ class Connection:
             if DEBUG:
                 print(f"Failed to decrypt piece {piece_index}: {e}")
             return None, None
+
         if DEBUG:
             print(f"Received piece for index {piece_index}, begin {begin}, length {len(block)} bytes")
         try:
@@ -783,21 +855,26 @@ class Connection:
     def store_piece_block(self, piece_index, begin, block):
         with self.lock:
             self.downloaded_block[piece_index][begin] = block
+
         is_piece_complete = self.is_piece_complete(piece_index)
         if is_piece_complete:
-            return self.assemble_complete_piece(piece_index)           
+            return self.assemble_complete_piece(piece_index)
+
         return is_piece_complete
 
     def is_piece_complete(self, piece_index):
         total_size = self.torrent.piece_length if piece_index < self.torrent.num_pieces - 1 else (self.torrent.total_length % self.torrent.piece_length or self.torrent.piece_length)
+
         num_blocks = (total_size + block_size - 1) // block_size
         if DEBUG:
             print(f"Piece {piece_index} has {len(self.downloaded_block[piece_index])} blocks out of {num_blocks}")
+
         return len(self.downloaded_block[piece_index]) == num_blocks
 
     def assemble_complete_piece(self, piece_index):
         blocks = self.downloaded_block[piece_index]
-        complete_piece = b''.join(blocks[begin] for begin in sorted(blocks.keys()))     
+        complete_piece = b''.join(blocks[begin] for begin in sorted(blocks.keys()))
+
         hash = hashlib.sha1(complete_piece).digest()
         if hash == self.torrent.piece_hashes[piece_index]:
             if DEBUG:
@@ -807,7 +884,8 @@ class Connection:
                 print(f"Piece {piece_index} fully downloaded and saved")
             self.downloaded_block[piece_index].clear()
             return True
-        if DEBUG:        
+
+        if DEBUG:
             print(f"Piece {piece_index} hash verification failed")
         return False
 
@@ -830,6 +908,7 @@ class Connection:
         else:
             print('File hash verification failed')
 
+
 def upload_torrent(torrent_path):
     url = f"{server_url}/upload_torrent"
     file = {'torrent': open(torrent_path, 'rb')}
@@ -846,20 +925,18 @@ def upload_torrent(torrent_path):
             for file in torrent[b'info'][b'files']
         ]
         data['path'] = json.dumps(files_info)
-        if DEBUG:
-            print(data['path'])
+
     try:
         response = session.post(url, files=file, data=data)
         if response.status_code == 200:
-                print("Torrent uploaded successfully")
+            print("Torrent uploaded successfully")
         else:
-                print("Failed to upload torrent:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+            print("Failed to upload torrent:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
     except requests.exceptions.ConnectionError:
-        if DEBUG:
-            print("Failed to connect to server")
+        print("Failed to connect to server")
     except Exception as e:
-        if DEBUG:
-            print("An error occurred:", e)
+        print("An error occurred:", e)
+
 
 def download_torrent(info_hash):
     url = f"{server_url}/download_torrent/{info_hash}"
@@ -874,11 +951,10 @@ def download_torrent(info_hash):
         else:
             print("Failed to download torrent:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
     except requests.exceptions.ConnectionError:
-        if DEBUG:
-            print("Failed to connect to server")
+        print("Failed to connect to server")
     except Exception as e:
-        if DEBUG:
-            print("An error occurred:", e)
+        print("An error occurred:", e)
+
 
 def scrape(info_hash):
     url = f"{server_url}/scrape"
@@ -891,6 +967,7 @@ def scrape(info_hash):
         print("Completed:", response_dict['completed'])
     else:
         print("Failed to scrape:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+
 
 def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
     url = f"{server_url}/announce"
@@ -919,8 +996,8 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
         else:
             print("Failed to announce:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
     except Exception as e:
-        if DEBUG:
-            print("An error occurred:", e)
+        print("An error occurred:", e)
+
 
 def register(username_input, password_input):
     data = {'username': username_input, 'password': password_input}
@@ -930,6 +1007,7 @@ def register(username_input, password_input):
         print("Registration successful")
     else:
         print("Registration failed:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+
 
 def login(username_input, password_input):
     data = {'username': username_input, 'password': password_input}
@@ -941,8 +1019,9 @@ def login(username_input, password_input):
         username = username_input
         return True
     else:
-        print("Login failed:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+        print("Login failed:", response.json().get('message', ''))
         return False
+
 
 def logout():
     url = server_url + '/logout'
@@ -950,7 +1029,8 @@ def logout():
     if response.status_code == 200:
         print("Logout successful")
     else:
-        print("Logout failed:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
+        print("Logout failed:", response.json().get('message', ''))
+
 
 def format_size(bytes_size):
     if bytes_size < 1024:
@@ -961,6 +1041,7 @@ def format_size(bytes_size):
         return f"{bytes_size / 1024 ** 2:.2f} MB"
     else:
         return f"{bytes_size / 1024 ** 3:.2f} GB"
+
 
 def list_torrents():
     url = server_url + '/list_torrents'
@@ -991,6 +1072,7 @@ def list_torrents():
         print("Failed to get torrents:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
         return None
 
+
 def start_as_seeder(torrent, peer_id, pieces=None):
     conn = Connection(torrent, peer_id)
     if pieces:
@@ -1007,6 +1089,7 @@ def start_as_seeder(torrent, peer_id, pieces=None):
     finally:
         announce(conn.torrent.info_hash, event='stopped', port=peer_port)
         print("Seeder stopped.")
+
 
 def start_as_leecher(torrent, peer_id, pieces=None):
     conn = Connection(torrent, peer_id)
@@ -1025,6 +1108,7 @@ def start_as_leecher(torrent, peer_id, pieces=None):
         print("\nDownload incomplete.")
         announce(conn.torrent.info_hash, event='stopped', port=peer_port)
 
+
 def become_seeder():
     path = questionary.path("Enter the path to the file or directory to create a torrent:").ask()
     create_torrent(path, server_url)
@@ -1038,6 +1122,7 @@ def become_seeder():
     torrent = Torrent(torrent_path)
     pieces_have = [True] * torrent.num_pieces
     start_as_seeder(torrent, bytes.fromhex(peer_id), pieces_have)
+
 
 def become_leecher():
     torrents_list = list_torrents()
@@ -1064,6 +1149,7 @@ def become_leecher():
     pieces_have = [False] * torrent.num_pieces
     start_as_leecher(torrent, bytes.fromhex(peer_id), pieces_have)
 
+
 def settings_menu():
     global DEBUG, server_url
     while True:
@@ -1088,6 +1174,7 @@ def settings_menu():
                 print("Server URL not changed.")
         else:
             print("Invalid choice")
+
 
 if __name__ == '__main__':
     is_logged_in = False
@@ -1122,7 +1209,8 @@ if __name__ == '__main__':
                 elif choice.startswith('2'):
                     username_input = questionary.text("Enter username:").ask()
                     password_input = questionary.password("Enter password:").ask()
-                    is_logged_in = login(username_input, password_input)
+                    if login(username_input, password_input):
+                        is_logged_in = True
                 else:
                     print("Invalid choice")
             else:

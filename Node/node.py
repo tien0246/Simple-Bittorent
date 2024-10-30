@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from threading import Thread
+from threading import Thread, active_count
 from queue import Queue
 import socket
 import requests
@@ -31,6 +31,7 @@ piece_length = 512 * 1024
 block_size = 16 * 1024
 torrents_dir = os.path.join(current_dir, 'torrents')
 downloads_dir = os.path.join(current_dir, 'downloads')
+piece_history = {}
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
@@ -51,6 +52,7 @@ class Torrent:
         self.pieces_have = [False] * self.num_pieces if pieces is None else pieces
         self.piece_hashes = [self.pieces[i*20:(i+1)*20] for i in range(self.num_pieces)]
         self.download_bar = None
+   
 
 def create_info(path):
     if not os.path.exists(path):
@@ -206,6 +208,7 @@ class Connection:
         self.piece_peer_map = BiMap()
         self.downloading_thread = 0
         self.aes_key = {}
+        self.stop = False
 
     def send_message(self, sock, msg_id, payload=b''):
         length = 1 + len(payload)
@@ -359,35 +362,44 @@ class Connection:
                 time.sleep(1)
 
     def run(self, peers):
-        if not peers:
-            print('No peer found.')
-            return
-        peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id and peer['port'] != peer_port]
-        self.peers = peers
-        if not peers:
-            print("No peers to connect....")
-            time.sleep(5)
-            return
+            if not peers:
+                print('No peer found.')
+                return
+            peers = [peer for peer in peers if peer['peerid'] != self.client_peer_id and peer['port'] != peer_port]
+            self.peers = peers
+            if not peers:
+                print("No peers to connect....")
+                time.sleep(5)
+                return
 
-        max_workers = 5
-        # threading.Thread(target=self.download_progress).start()
-        with alive_bar(self.torrent.num_pieces, title='Downloading', bar='smooth', theme='smooth') as self.download_bar:
-            while not all(self.torrent.pieces_have):
-                if self.downloading_thread >= max_workers:
-                        time.sleep(10)
-                        continue
-                if not peers:
-                    print("No peers to connect...")
-                    break
-                for peer in self.peers:
-                    if self.downloading_thread >= max_workers:
-                        break
-                    if DEBUG:
-                        print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
-                    self.handle_peer_connection(peer)
-        while self.downloading_thread > 0:
-            pass
-        self.verify_file_hash()                 
+            max_workers = 5
+            # threading.Thread(target=self.download_progress).start()
+            with alive_bar(self.torrent.num_pieces, title='Downloading', bar='smooth', theme='smooth') as self.download_bar:
+                for have in self.torrent.pieces_have:
+                    if have:
+                        self.download_bar()        
+                while not all(self.torrent.pieces_have) and not self.stop:
+                    try:
+                        if self.downloading_thread >= max_workers:
+                                time.sleep(1)
+                                continue
+                        if not peers:
+                            print("No peers to connect...")
+                            break
+                        for peer in self.peers:
+                            if self.downloading_thread >= max_workers:
+                                break
+                            if DEBUG:
+                                print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
+                            self.handle_peer_connection(peer)
+                    except KeyboardInterrupt:
+                        self.stop = True
+                        print("Download interrupted. Stopping leecher...")
+                        break 
+            while self.downloading_thread > 0:
+                pass
+            if not self.stop:
+                self.verify_file_hash()             
 
     def handle_peer_connection(self, peer):
         try:
@@ -420,7 +432,7 @@ class Connection:
             current_piece_index = None
             progress = 0
             done = False
-            while not all(self.torrent.pieces_have):
+            while not all(self.torrent.pieces_have) and not self.stop:
                 if done == True:
                     if not self.request_pieces.empty():
                         current_piece_index = self.request_pieces.get()
@@ -583,7 +595,7 @@ class Connection:
                 print(f"Handshake successful with peer {client_addr}")
             bitfield_message = self.create_bitfield(self.torrent.pieces_have)
             self.send_message(client_sock, 5, bitfield_message)
-            while True:
+            while not self.stop:
                 msg_id, payload = self.receive_message(client_sock)
                 if msg_id == 2:
                     self.aes_key[client_addr] = payload
@@ -607,10 +619,10 @@ class Connection:
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_sock.bind(('', port))
             server_sock.listen(5)
+            server_sock.settimeout(1)
             if DEBUG:
                 print(f"Listening for incoming connections on port {port}...")
-            while True:
-                time.sleep(2)
+            while not self.stop:
                 client_sock, client_addr = server_sock.accept()
                 client_thread = threading.Thread(
                     target=self.handle_client,
@@ -1007,6 +1019,7 @@ def start_as_seeder(torrent, peer_id, pieces=None):
     finally:
         announce(conn.torrent.info_hash, event='stopped', port=peer_port)
         print("Seeder stopped.")
+        conn.stop = True
 
 def start_as_leecher(torrent, peer_id, pieces=None):
     conn = Connection(torrent, peer_id)
@@ -1015,14 +1028,20 @@ def start_as_leecher(torrent, peer_id, pieces=None):
     conn.aes_key[0] = AESGCM.generate_key(bit_length=256)
     peer_list = announce(conn.torrent.info_hash, event='started', port=peer_port, uploaded=0, downloaded=0, left=conn.torrent.total_length)
     print(f"\nLeecher '{peer_id}' started downloading file '{conn.torrent.name}'.")
-    conn.start_server_in_thread(peer_port)
-    conn.run(peer_list)
+    try:
+        conn.start_server_in_thread(peer_port)
+        conn.run(peer_list)
+    except KeyboardInterrupt:
+        print("Stopping leecher...")
+        conn.stop = True
 
     if all(conn.torrent.pieces_have):
         print(f"\nFile '{conn.torrent.name}' has been successfully saved.")
         announce(conn.torrent.info_hash, event='completed', port=peer_port)
+        piece_history[torrent.info_hash] = conn.torrent.pieces_have
     else:
         print("\nDownload incomplete.")
+        piece_history[torrent.info_hash] = conn.torrent.pieces_have
         announce(conn.torrent.info_hash, event='stopped', port=peer_port)
 
 def become_seeder():
@@ -1036,7 +1055,8 @@ def become_seeder():
     print("Listening on port", peer_port)
     print("Peer ID:", peer_id)
     torrent = Torrent(torrent_path)
-    pieces_have = [True] * torrent.num_pieces
+    piece_history[info_hash] = [True] * torrent.num_pieces
+    pieces_have = piece_history[info_hash]
     start_as_seeder(torrent, bytes.fromhex(peer_id), pieces_have)
 
 def become_leecher():
@@ -1056,12 +1076,29 @@ def become_leecher():
         except ValueError:
             print("Invalid input. Please enter a number.")
     info_hash = selected_torrent['info_hash']
-    download_torrent(info_hash)
     torrent_filename = info_hash + '.torrent'
     torrent_path = os.path.join(torrents_dir, torrent_filename)
+    if not os.path.exists(torrent_path):
+        download_torrent(info_hash)
     print("Peer ID:", peer_id)
     torrent = Torrent(torrent_path)
-    pieces_have = [False] * torrent.num_pieces
+    if not info_hash in piece_history or all(piece_history[info_hash]) or not any(piece_history[info_hash]):
+        piece_history[info_hash] = [False] * torrent.num_pieces
+    else:
+        choice = questionary.select(
+            "You have started downloading this file before. Continue last download?",
+            choices=[
+                "1. Yes",
+                "2. No ",
+                "Exit"
+            ]).ask()
+        if choice is None or choice == 'Exit':
+            return
+        if choice.startswith('1'):
+            pass
+        if choice.startswith('2'):
+            piece_history[info_hash] = [False] * torrent.num_pieces
+    pieces_have = piece_history[info_hash]
     start_as_leecher(torrent, bytes.fromhex(peer_id), pieces_have)
 
 def settings_menu():

@@ -1,6 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import threading
-from threading import Thread, active_count
+from threading import Thread
 from queue import Queue
 import socket
 import requests
@@ -373,11 +373,10 @@ class Connection:
                 return
 
             max_workers = 5
-            # threading.Thread(target=self.download_progress).start()
             with alive_bar(self.torrent.num_pieces, title='Downloading', bar='smooth', theme='smooth') as self.download_bar:
                 for have in self.torrent.pieces_have:
                     if have:
-                        self.download_bar()        
+                        self.download_bar()
                 while not all(self.torrent.pieces_have) and not self.stop:
                     try:
                         if self.downloading_thread >= max_workers:
@@ -398,8 +397,13 @@ class Connection:
                         break 
             while self.downloading_thread > 0:
                 pass
-            if not self.stop:
-                self.verify_file_hash()             
+            if not self.stop and all(self.torrent.pieces_have):
+                if self.verify_file_hash():
+                    choice = questionary.select("Download completed. Do you wanna become a seeder?", choices=['Yes', 'No']).ask()
+                    if choice == 'No':
+                        self.stop = True
+                        announce(self.torrent.info_hash, 'stopped', port=peer_port)
+                        return
 
     def handle_peer_connection(self, peer):
         try:
@@ -475,7 +479,7 @@ class Connection:
                                     self.send_message(peer['sock'], 4, struct.pack("!I", current_piece_index))
                                 except:
                                     if DEBUG:
-                                        print(f'Cannot send have message to {peer['ip']}:{peer['port']}')
+                                        print(f"Cannot send have message to {peer['ip']}:{peer['port']}")
                                     continue
                         if not self.request_pieces.empty():
                             current_piece_index = self.request_pieces.get()
@@ -539,7 +543,7 @@ class Connection:
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.connect((peer['ip'], peer['port']))
-            sock.settimeout(5)
+            sock.settimeout(30)
             handshake_message = self.create_handshake_message()
             sock.sendall(handshake_message)
             response = sock.recv(68)
@@ -619,7 +623,7 @@ class Connection:
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_sock.bind(('', port))
             server_sock.listen(5)
-            server_sock.settimeout(1)
+            server_sock.settimeout(30)
             if DEBUG:
                 print(f"Listening for incoming connections on port {port}...")
             while not self.stop:
@@ -839,8 +843,10 @@ class Connection:
         downloaded_info_hash = calculate_info_hash(downloaded_info)
         if downloaded_info_hash == self.torrent.info_hash:
             print('File hash verified')
+            return True
         else:
             print('File hash verification failed')
+            return False
 
 def upload_torrent(torrent_path):
     url = f"{server_url}/upload_torrent"
@@ -1027,7 +1033,7 @@ def start_as_leecher(torrent, peer_id, pieces=None):
         conn.torrent.pieces_have = pieces.copy()
     conn.aes_key[0] = AESGCM.generate_key(bit_length=256)
     peer_list = announce(conn.torrent.info_hash, event='started', port=peer_port, uploaded=0, downloaded=0, left=conn.torrent.total_length)
-    print(f"\nLeecher '{peer_id}' started downloading file '{conn.torrent.name}'.")
+    print(f"\nLeecher '{peer_id.hex()}' started downloading file '{conn.torrent.name}'.")
     try:
         conn.start_server_in_thread(peer_port)
         conn.run(peer_list)
@@ -1065,7 +1071,7 @@ def become_leecher():
         print("No torrents available for download.")
         return
     while True:
-        selection = input("Enter the number of the torrent to download: ")
+        selection = 1
         try:
             selection = int(selection)
             if 1 <= selection <= len(torrents_list):

@@ -26,6 +26,7 @@ session = requests.Session()
 peer_port = 50000 + random.randint(0, 5000)
 peer_id = hashlib.sha1(str(random.randint(0, sys.maxsize)).encode()).hexdigest()
 server_url = 'http://103.116.52.225:8000'
+public_ip = requests.get('https://ipinfo.io/ip').text.strip()
 username = ''
 piece_length = 512 * 1024
 block_size = 16 * 1024
@@ -390,7 +391,8 @@ class Connection:
                                 break
                             if DEBUG:
                                 print(f"Connecting to peer {peer['ip']}:{peer['port']}...")
-                            self.handle_peer_connection(peer)
+                            download_thread = Thread(target=self.handle_peer_connection, args=(peer,))
+                            download_thread.start()
                     except KeyboardInterrupt:
                         self.stop = True
                         print("Download interrupted. Stopping leecher...")
@@ -399,13 +401,14 @@ class Connection:
                 pass
             if not self.stop and all(self.torrent.pieces_have):
                 if self.verify_file_hash():
-                    choice = questionary.select("Download completed. Do you wanna become a seeder?", choices=['Yes', 'No']).ask()
+                    choice = questionary.select("Download completed. Do you wanna keep being a seeder?", choices=['Yes', 'No']).ask()
                     if choice == 'No':
                         self.stop = True
                         announce(self.torrent.info_hash, 'stopped', port=peer_port)
                         return
 
     def handle_peer_connection(self, peer):
+        self.downloading_thread += 1
         try:
             sock = None
             if all(self.torrent.pieces_have):
@@ -418,17 +421,17 @@ class Connection:
             peer['sock'] = sock
             self.peers.append(peer)
             self.retry_counts[peer['peerid']] = [0] * self.torrent.num_pieces
-            download_thread = Thread(target=self.download_peer, args=(peer,))
-            download_thread.start()
+            self.download_peer(peer)
             return True       
         except Exception as e:
             if DEBUG:
                 print(f"Error handling peer connection: {e}")
             return
+        finally:
+            self.downloading_thread -= 1
     
     def download_peer(self, peer):
         try:
-            self.downloading_thread += 1
             if 'sock' not in peer or peer['sock'].fileno() == -1:
                 self.peers.remove(peer)
                 return
@@ -523,7 +526,6 @@ class Connection:
                 print('Lost connection to Peer...')
             return None
         finally:
-            self.downloading_thread -= 1
             if not all(self.torrent.pieces_have) and current_piece_index is not None:
                 self.request_pieces.put_nowait(current_piece_index)
             if sock:
@@ -623,7 +625,6 @@ class Connection:
             server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             server_sock.bind(('', port))
             server_sock.listen(5)
-            server_sock.settimeout(30)
             if DEBUG:
                 print(f"Listening for incoming connections on port {port}...")
             while not self.stop:
@@ -932,6 +933,11 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
                 peerid = peerid.decode()
                 peer_info = {k.decode(): (v.decode() if isinstance(v, bytes) else v) for k, v in peer_info.items()}
                 peer_info['peerid'] = peerid
+                if peerid == peer_id:
+                    if peer_info['ip'] != public_ip:
+                        print("Error from tracker.")
+                        return None
+                peer_info['ip'] = '127.0.0.1'
                 peers_list.append(peer_info)
             return peers_list
         else:
@@ -1071,7 +1077,7 @@ def become_leecher():
         print("No torrents available for download.")
         return
     while True:
-        selection = 1
+        selection = input("Enter the number of the torrent to download: ")
         try:
             selection = int(selection)
             if 1 <= selection <= len(torrents_list):

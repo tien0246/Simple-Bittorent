@@ -1021,6 +1021,7 @@ def start_as_seeder(torrent, peer_id, pieces=None):
     if pieces:
         conn.torrent.pieces_have = pieces.copy()
     peer_list = announce(conn.torrent.info_hash, event='started', port=peer_port)
+    atexit.register(announce, conn.torrent.info_hash, event='stopped', port=peer_port)
     conn.peers = peer_list
     print(f"\nSeeder is ready to serve file '{conn.torrent.name}'.")
     conn.start_server_in_thread(peer_port)
@@ -1031,6 +1032,7 @@ def start_as_seeder(torrent, peer_id, pieces=None):
         print("Stopping seeder...")
     finally:
         announce(conn.torrent.info_hash, event='stopped', port=peer_port)
+        atexit.unregister(announce)
         print("Seeder stopped.")
         conn.stop = True
 
@@ -1040,6 +1042,7 @@ def start_as_leecher(torrent, peer_id, pieces=None):
         conn.torrent.pieces_have = pieces.copy()
     conn.aes_key[0] = AESGCM.generate_key(bit_length=256)
     peer_list = announce(conn.torrent.info_hash, event='started', port=peer_port, uploaded=0, downloaded=0, left=conn.torrent.total_length)
+    atexit.register(announce, conn.torrent.info_hash, event='stopped', port=peer_port)
     print(f"\nLeecher '{peer_id.hex()}' started downloading file '{conn.torrent.name}'.")
     try:
         conn.start_server_in_thread(peer_port)
@@ -1052,6 +1055,7 @@ def start_as_leecher(torrent, peer_id, pieces=None):
         print(f"\nFile '{conn.torrent.name}' has been successfully saved.")
         announce(conn.torrent.info_hash, event='completed', port=peer_port)
         piece_history[torrent.info_hash] = conn.torrent.pieces_have
+        atexit.unregister(announce)
     else:
         print("\nDownload incomplete.")
         piece_history[torrent.info_hash] = conn.torrent.pieces_have
@@ -1141,51 +1145,52 @@ def settings_menu():
 
 if __name__ == '__main__':
     is_logged_in = False
-    try:
-        while True:
-            if not is_logged_in:
-                choice = questionary.select(
-                    "Select an option:",
-                    choices=[
-                        "1. Register",
-                        "2. Login",
-                        "Exit"
-                    ]).ask()
-            else:
-                choice = questionary.select(
-                    "Select an option:",
-                    choices=[
-                        "1. Become Seeder",
-                        "2. Become Leecher",
-                        "3. Settings",
-                        "4. Logout",
-                        "Exit"
-                    ]).ask()
+    while True:
+        if not is_logged_in:
+            choice = questionary.select(
+                "Select an option:",
+                choices=[
+                    "1. Register",
+                    "2. Login",
+                    "Exit"
+                ]).ask()
+        else:
+            choice = questionary.select(
+                "Select an option:",
+                choices=[
+                    "1. Become Seeder",
+                    "2. Become Leecher",
+                    "3. Settings",
+                    "4. Logout",
+                    "Exit"
+                ]).ask()
 
-            if choice is None or choice == 'Exit':
-                break
-            if not is_logged_in:
-                if choice.startswith('1'):
-                    username_input = questionary.text("Enter username:").ask()
-                    password_input = questionary.password("Enter password:").ask()
-                    register(username_input, password_input)
-                elif choice.startswith('2'):
-                    username_input = questionary.text("Enter username:").ask()
-                    password_input = questionary.password("Enter password:").ask()
-                    is_logged_in = login(username_input, password_input)
-                else:
-                    print("Invalid choice")
+        if choice is None or choice == 'Exit':
+            break
+        if not is_logged_in:
+            if choice.startswith('1'):
+                username_input = questionary.text("Enter username:").ask()
+                password_input = questionary.password("Enter password:").ask()
+                register(username_input, password_input)
+            elif choice.startswith('2'):
+                username_input = questionary.text("Enter username:").ask()
+                password_input = questionary.password("Enter password:").ask()
+                is_logged_in = login(username_input, password_input)
+                if is_logged_in:
+                    atexit.register(logout)
             else:
-                if choice.startswith('1'):
-                    become_seeder()
-                elif choice.startswith('2'):
-                    become_leecher()
-                elif choice.startswith('3'):
-                    settings_menu()
-                elif choice.startswith('4'):
-                    logout()
-                    is_logged_in = False
-                else:
-                    print("Invalid choice")
-    finally:
-        atexit.register(logout)
+                print("Invalid choice")
+        else:
+            if choice.startswith('1'):
+                become_seeder()
+            elif choice.startswith('2'):
+                become_leecher()
+            elif choice.startswith('3'):
+                settings_menu()
+            elif choice.startswith('4'):
+                logout()
+                is_logged_in = False
+                atexit.unregister(logout)
+            else:
+                print("Invalid choice")
+            

@@ -83,7 +83,10 @@ def announce():
             return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
         info_hash = request.args.get('info_hash')
         peer_id = request.args.get('peer_id')
-        ip = request.remote_addr
+        if request.headers.getlist("X-Forwarded-For"):
+            ip = request.headers.getlist("X-Forwarded-For")[0]
+        else:
+            ip = request.remote_addr
         port = request.args.get('port')
         uploaded = request.args.get('uploaded')
         downloaded = request.args.get('downloaded')
@@ -178,7 +181,7 @@ def upload_torrent():
     else:
         torrents[info_hash]['path'] = json.loads(request.form.get('path'))
     save_json(torrents_file, torrents)
-    torrent_path = f"{torrents_dir}/{info_hash + ".torrent"}"
+    torrent_path = f"{torrents_dir}/{info_hash + '.torrent'}"
     torrent_file.save(torrent_path)
     return make_bencoded_response({'status': 'success'}, 200)
 

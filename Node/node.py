@@ -934,6 +934,8 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
                 peer_info = {k.decode(): (v.decode() if isinstance(v, bytes) else v) for k, v in peer_info.items()}
                 peer_info['peerid'] = peerid
                 if peerid == peer_id:
+                    print(public_ip)
+                    print(peer_info['ip'])
                     if peer_info['ip'] != public_ip:
                         print("Error from tracker.")
                         return None
@@ -998,7 +1000,7 @@ def list_torrents():
             torrent_info = {k.decode(): v for k, v in torrent_info.items()}
             name = torrent_info['name'].decode()
             uploaded_by = torrent_info.get('created_by', b'').decode()
-            date_uploaded = time.ctime(torrent_info.get('creation date', time.time()))
+            date_uploaded = time.ctime(torrent_info.get('date_uploaded', time.time()))
             seeder = torrent_info.get('seeder', 0)
             leecher = torrent_info.get('leecher', 0)
             completed = torrent_info.get('completed', 0)

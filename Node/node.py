@@ -934,11 +934,10 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
                 peer_info = {k.decode(): (v.decode() if isinstance(v, bytes) else v) for k, v in peer_info.items()}
                 peer_info['peerid'] = peerid
                 if peerid == peer_id:
-                    print(public_ip)
-                    print(peer_info['ip'])
                     if peer_info['ip'] != public_ip:
-                        print("Error from tracker.")
-                        return None
+                        if DEBUG: print("Error from tracker.")
+                        # return None
+                        continue
                 peer_info['ip'] = '127.0.0.1'
                 peers_list.append(peer_info)
             return peers_list

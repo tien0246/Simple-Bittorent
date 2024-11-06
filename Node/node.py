@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import questionary
 from alive_progress import alive_bar
 from tabulate import tabulate
+import psutil
 
 DEBUG = False
 
@@ -909,13 +910,20 @@ def scrape(info_hash):
     else:
         print("Failed to scrape:", bencodepy.decode(response.content).get(b'failure reason', b'').decode())
 
+def get_ip():
+    for interface, addrs in psutil.net_if_addrs().items():
+        for addr in addrs:
+            if addr.family == socket.AF_INET and addr.address.startswith("10."):
+                return addr.address
+    return None
+
 def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
     url = f"{server_url}/announce"
     data = {
         'info_hash': info_hash,
         'peer_id': peer_id,
         'event': event,
-        'ip': '127.0.0.1' if server_url == 'http://127.0.0.1:8000' else socket.gethostbyname(socket.gethostname())
+        'ip': '127.0.0.1' if server_url == 'http://127.0.0.1:8000' else (get_ip() if socket.gethostbyname(socket.gethostname()).startswith('127.0') else socket.gethostbyname(socket.gethostname()))
     }
     if event == 'started':
         data['port'] = port

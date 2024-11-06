@@ -26,7 +26,7 @@ session = requests.Session()
 peer_port = 50000 + random.randint(0, 5000)
 peer_id = hashlib.sha1(str(random.randint(0, sys.maxsize)).encode()).hexdigest()
 server_url = 'http://103.116.52.225:8000'
-public_ip = requests.get('https://ipinfo.io/ip').text.strip()
+# public_ip = requests.get('https://ipinfo.io/ip').text.strip()
 username = ''
 piece_length = 512 * 1024
 block_size = 16 * 1024
@@ -916,7 +916,8 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
     data = {
         'info_hash': info_hash,
         'peer_id': peer_id,
-        'event': event
+        'event': event,
+        'ip': '127.0.0.1' if server_url == 'http://127.0.0.1:8000' else socket.gethostbyname(socket.gethostname())
     }
     if event == 'started':
         data['port'] = port
@@ -933,12 +934,13 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
                 peerid = peerid.decode()
                 peer_info = {k.decode(): (v.decode() if isinstance(v, bytes) else v) for k, v in peer_info.items()}
                 peer_info['peerid'] = peerid
-                if peerid == peer_id:
-                    if peer_info['ip'] != public_ip:
-                        if DEBUG: print("Error from tracker.")
-                        # return None
-                        continue
-                peer_info['ip'] = socket.gethostbyname(socket.gethostname()) if server_url == 'http://127.0.0.1:8000' else '127.0.0.1'
+                # if peerid == peer_id:
+                #     if peer_info['ip'] != public_ip:
+                #         if DEBUG: print("Error from tracker.")
+                #         # return None
+                #         continue
+                # peer_info['ip'] = socket.gethostbyname(socket.gethostname()) if server_url == 'http://127.0.0.1:8000' else '127.0.0.1'
+                # peer_info['ip'] = public_ip
                 peers_list.append(peer_info)
             return peers_list
         else:

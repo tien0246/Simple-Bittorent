@@ -370,7 +370,6 @@ class Connection:
             self.peers = peers
             if not peers:
                 print("No peers to connect....")
-                time.sleep(5)
                 return
 
             max_workers = 5
@@ -381,7 +380,7 @@ class Connection:
                 while not all(self.torrent.pieces_have) and not self.stop:
                     try:
                         if self.downloading_thread >= max_workers:
-                                time.sleep(5)
+                                time.sleep(1)
                                 continue
                         if not peers:
                             print("No peers to connect...")
@@ -460,7 +459,7 @@ class Connection:
                 except:
                     if not all(self.torrent.pieces_have) and current_piece_index is not None:
                         if (self.retry_pieces(current_piece_index, peer['peerid'])):
-                            time.sleep(2)
+                            time.sleep(1)
                             continue
                         else: 
                             break
@@ -754,7 +753,6 @@ class Connection:
                 break
 
     def start_request(self, sock, piece_index, begin=0):
-        # if DEBUG: time.sleep(1)
         length = min(block_size, self.torrent.total_length - piece_index * self.torrent.piece_length - begin)
         payload = struct.pack("!III", piece_index, begin, length)
         self.send_message(sock, 6, payload)
@@ -1029,7 +1027,7 @@ def start_as_seeder(torrent, peer_id, pieces=None):
     conn.start_server_in_thread(peer_port)
     try:
         while True:
-            time.sleep(5)
+            time.sleep(1)
     except KeyboardInterrupt:
         print("Stopping seeder...")
     finally:

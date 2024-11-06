@@ -705,7 +705,7 @@ class Connection:
             with ThreadPoolExecutor() as executor:
                 for file_info in self.torrent.paths:
                     file_length = file_info['length']
-                    file_path = os.path.join(self.torrent.name, *file_info['path'])
+                    file_path = os.path.join(path_file_global, *file_info['path'])
                     if current_offset <= byte_offset < current_offset + file_length:
                         file_offset = byte_offset - current_offset
                         read_length = min(remaining_length, file_length - file_offset)

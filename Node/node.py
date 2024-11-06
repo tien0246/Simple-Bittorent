@@ -695,7 +695,8 @@ class Connection:
                 return f.read(read_length)         
         if not self.torrent.paths:
             global path_file_global
-            file_path = os.path.join(path_file_global)
+            # file_path = os.path.join(path_file_global)
+            file_path = path_file_global
             with open(file_path, 'rb') as f:
                 f.seek(byte_offset)
                 data = f.read(length)

@@ -1013,10 +1013,14 @@ def list_torrents():
             seeder = torrent_info.get('seeder', 0)
             leecher = torrent_info.get('leecher', 0)
             completed = torrent_info.get('completed', 0)
+            size = 0
             if 'file_size' in torrent_info:
                 size = format_size(torrent_info['file_size'])
             else:
-                size = 'Multiple files'
+                # size = 'Multiple files'
+                for file_info in torrent_info['path']:
+                    size += file_info.get(b'length')
+                size = format_size(size)
             table_data.append([idx, info_hash, name, size, uploaded_by, date_uploaded, seeder, leecher, completed])
             torrents_list.append({'info_hash': info_hash, 'name': name})
         headers = ['No.', 'Info Hash', 'Name', 'Size', 'Uploaded By', 'Date Uploaded', 'Seeders', 'Leechers', 'Completed']

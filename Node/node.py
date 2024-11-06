@@ -86,6 +86,7 @@ def create_info(path):
         files = []
         buffer = b''
         for root, _, filenames in os.walk(path):
+            filenames.sort()
             for filename in filenames:
                 file_path = os.path.join(root, filename)
                 file_size = os.path.getsize(file_path)
@@ -93,6 +94,7 @@ def create_info(path):
                 total_size += file_size
                 relative_path = os.path.relpath(file_path, path)
                 path_components = [component.encode('utf-8') for component in relative_path.split(os.sep)]
+                # print(path_components)
                 files.append({'length': file_size, 'path': path_components})
                 with open(file_path, 'rb') as f, alive_bar(num_pieces, title='Creating torrent for file: ' + filename) as bar:
                     while True:
@@ -695,8 +697,7 @@ class Connection:
                 return f.read(read_length)         
         if not self.torrent.paths:
             global path_file_global
-            # file_path = os.path.join(path_file_global)
-            file_path = path_file_global
+            file_path = os.path.join(path_file_global)
             with open(file_path, 'rb') as f:
                 f.seek(byte_offset)
                 data = f.read(length)
@@ -705,7 +706,7 @@ class Connection:
             with ThreadPoolExecutor() as executor:
                 for file_info in self.torrent.paths:
                     file_length = file_info['length']
-                    file_path = os.path.join(path_file_global, *file_info['path'])
+                    file_path = os.path.join(self.torrent.name, *file_info['path'])
                     if current_offset <= byte_offset < current_offset + file_length:
                         file_offset = byte_offset - current_offset
                         read_length = min(remaining_length, file_length - file_offset)

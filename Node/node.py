@@ -34,6 +34,7 @@ block_size = 16 * 1024
 torrents_dir = os.path.join(current_dir, 'torrents')
 downloads_dir = os.path.join(current_dir, 'downloads')
 piece_history = {}
+path_file_global = ''
 
 if not os.path.exists(torrents_dir):
     os.makedirs(torrents_dir)
@@ -693,7 +694,8 @@ class Connection:
                 f.seek(file_offset)
                 return f.read(read_length)         
         if not self.torrent.paths:
-            file_path = os.path.join(self.torrent.name)
+            global path_file_global
+            file_path = os.path.join(path_file_global)
             with open(file_path, 'rb') as f:
                 f.seek(byte_offset)
                 data = f.read(length)
@@ -797,8 +799,8 @@ class Connection:
             return None, None
 
     def store_piece_block(self, piece_index, begin, block):
-        with self.lock:
-            self.downloaded_block[piece_index][begin] = block
+        # with self.lock:
+        self.downloaded_block[piece_index][begin] = block
         is_piece_complete = self.is_piece_complete(piece_index)
         if is_piece_complete:
             return self.assemble_complete_piece(piece_index)           
@@ -1045,6 +1047,7 @@ def start_as_seeder(torrent, peer_id, pieces=None):
         conn.stop = True
 
 def start_as_leecher(torrent, peer_id, pieces=None):
+    global path_file_global
     conn = Connection(torrent, peer_id)
     if pieces:
         conn.torrent.pieces_have = pieces.copy()
@@ -1053,6 +1056,7 @@ def start_as_leecher(torrent, peer_id, pieces=None):
     atexit.register(announce, conn.torrent.info_hash, event='stopped', port=peer_port)
     print(f"\nLeecher '{peer_id.hex()}' started downloading file '{conn.torrent.name}'.")
     try:
+        path_file_global = os.path.join(downloads_dir, conn.torrent.name)
         conn.start_server_in_thread(peer_port)
         conn.run(peer_list)
     except KeyboardInterrupt:
@@ -1070,9 +1074,10 @@ def start_as_leecher(torrent, peer_id, pieces=None):
         announce(conn.torrent.info_hash, event='stopped', port=peer_port)
 
 def become_seeder():
-    path = questionary.path("Enter the path to the file or directory to create a torrent:").ask()
-    create_torrent(path, server_url)
-    info = create_info(path)
+    global path_file_global
+    path_file_global = questionary.path("Enter the path to the file or directory to create a torrent:").ask()
+    create_torrent(path_file_global, server_url)
+    info = create_info(path_file_global)
     info_hash = calculate_info_hash(info)
     torrent_filename = info_hash + '.torrent'
     torrent_path = os.path.join(torrents_dir, torrent_filename)

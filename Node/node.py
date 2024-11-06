@@ -938,7 +938,7 @@ def announce(info_hash, event, port=None, uploaded=0, downloaded=0, left=0):
                         if DEBUG: print("Error from tracker.")
                         # return None
                         continue
-                peer_info['ip'] = '127.0.0.1'
+                peer_info['ip'] = socket.gethostbyname(socket.gethostname()) if server_url == 'http://127.0.0.1:8000' else '127.0.0.1'
                 peers_list.append(peer_info)
             return peers_list
         else:

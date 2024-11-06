@@ -77,16 +77,13 @@ def logout():
 @login_required
 def announce():
     try:
-        required_params = ['info_hash', 'peer_id', 'event']
+        required_params = ['info_hash', 'ip', 'peer_id', 'event']
         missing_params = [param for param in required_params if not request.args.get(param)]
         if missing_params:
             return make_bencoded_response({'failure reason': f'Missing required parameters: {", ".join(missing_params)}'}, 400)
         info_hash = request.args.get('info_hash')
         peer_id = request.args.get('peer_id')
-        if request.headers.getlist("X-Forwarded-For"):
-            ip = request.headers.getlist("X-Forwarded-For")[0]
-        else:
-            ip = request.remote_addr
+        ip = request.args.get('ip')
         port = request.args.get('port')
         uploaded = request.args.get('uploaded')
         downloaded = request.args.get('downloaded')
